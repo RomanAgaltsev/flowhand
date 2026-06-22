@@ -1,0 +1,65 @@
+version: "3"
+
+vars:
+  MODULE: github.com/RomanAgaltsev/flowhand
+  BIN: bin/flowhand
+  COMPOSE_FILE: deploy/compose/docker-compose.yml
+
+tasks:
+  default:
+    desc: list tasks
+    cmds:
+      - task --list
+
+  build:
+    desc: build flowhand binary
+    sources: ["**/*.go", "go.mod", "go.sum"]
+    generates: ["{{.BIN}}"]
+    cmds:
+      - go build -o {{.BIN}} ./cmd/flowhand
+
+  test:
+    desc: run unit tests with race detector
+    cmds:
+      - go test -race -count=1 ./...
+
+  lint:
+    desc: run golangci-lint
+    cmds:
+      - golangci-lint run
+
+  vuln:
+    desc: run govulncheck
+    cmds:
+      - govulncheck ./...
+
+  up:
+    desc: bring up dev stack
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} up -d
+
+  down:
+    desc: tear down dev stack
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} down -v
+
+  logs:
+    desc: tail dev stack logs
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} logs -f
+
+  run:server:
+    desc: run flowhand server locally
+    deps: [build]
+    cmds:
+      - ./{{.BIN}} server
+
+  migrate:up:
+    desc: apply all migrations
+    cmds:
+      - goose -dir migrations postgres "$FLOWHAND_DB_DSN" up
+
+  migrate:down:
+    desc: roll back one migration
+    cmds:
+      - goose -dir migrations postgres "$FLOWHAND_DB_DSN" down
