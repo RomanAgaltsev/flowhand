@@ -32,3 +32,8 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Deploy data
+loki_data
+prometheus_data
+tempo_data
