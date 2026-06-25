@@ -1,0 +1,11 @@
+{
+  "identities": [
+    {
+      "name": "flowhand",
+      "credentials": [
+        { "accessKey": "flowhand", "secretKey": "flowhandflowhand" }
+      ],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    }
+  ]
+}
