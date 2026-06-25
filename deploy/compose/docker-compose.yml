@@ -172,6 +172,14 @@ services:
       - loki
     networks: [flowhand]
 
+  pyroscope:
+    image: grafana/pyroscope:latest
+    command: ["server", "-config.file=/etc/pyroscope/config.yml"]
+    volumes:
+      - ./pyroscope/config.yml:/etc/pyroscope/config.yaml:ro
+    ports: ["4040:4040"]
+    networks: [flowhand]
+
   grafana:
     image: grafana/grafana:13.0.3
     environment:
