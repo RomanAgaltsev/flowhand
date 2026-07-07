@@ -13,7 +13,7 @@ import (
 	"github.com/RomanAgaltsev/flowhand/internal/config"
 )
 
-func NewTracerProvider(ctx context.Context, cfg config.Config) (*trace.TracerProvider, error) {
+func NewTracerProvider(ctx context.Context, cfg *config.Config) (*trace.TracerProvider, error) {
 	traceExporter, err := otlptracegrpc.New(ctx,
 		otlptracegrpc.WithEndpoint(cfg.Obs.OTLPEndpoint),
 		otlptracegrpc.WithInsecure(),

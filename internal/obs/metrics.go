@@ -17,7 +17,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-func NewMeterProvider(ctx context.Context, cfg config.Config) (*metric.MeterProvider, error) {
+func NewMeterProvider(ctx context.Context, cfg *config.Config) (*metric.MeterProvider, error) {
 	meterExporter, err := otlpmetricgrpc.New(ctx)
 	if err != nil {
 		return nil, err

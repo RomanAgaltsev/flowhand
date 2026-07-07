@@ -13,7 +13,7 @@ type Config struct {
 	Level  string
 }
 
-func NewLogger(cfg config.Obs) *slog.Logger {
+func NewLogger(cfg *config.Obs) *slog.Logger {
 	var handler slog.Handler
 
 	opts := slog.HandlerOptions{
@@ -26,7 +26,6 @@ func NewLogger(cfg config.Obs) *slog.Logger {
 	}
 
 	logger := slog.New(handler)
-	slog.SetDefault(logger)
 
 	return logger
 }
