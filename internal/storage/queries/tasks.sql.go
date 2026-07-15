@@ -8,7 +8,7 @@ package queries
 import (
 	"context"
 
-	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/google/uuid"
 )
 
 const createTask = `-- name: CreateTask :one
@@ -18,9 +18,9 @@ RETURNING id, idempotency_key, payload, status, created_at
 `
 
 type CreateTaskParams struct {
-	ID             pgtype.UUID `json:"id"`
-	IdempotencyKey *string     `json:"idempotency_key"`
-	Payload        []byte      `json:"payload"`
+	ID             uuid.UUID `json:"id"`
+	IdempotencyKey *string   `json:"idempotency_key"`
+	Payload        []byte    `json:"payload"`
 }
 
 func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error) {
@@ -42,7 +42,7 @@ FROM tasks
 WHERE id = $1
 `
 
-func (q *Queries) GetTaskByID(ctx context.Context, id pgtype.UUID) (Task, error) {
+func (q *Queries) GetTaskByID(ctx context.Context, id uuid.UUID) (Task, error) {
 	row := q.db.QueryRow(ctx, getTaskByID, id)
 	var i Task
 	err := row.Scan(

@@ -9,6 +9,14 @@ sql:
         out: internal/storage/queries
         sql_package: pgx/v5
         emit_json_tags: true
-        emit_prepared_queries: false
+        emit_prepared_queries: true
         emit_interface: true
         emit_pointers_for_null_types: true
+        overrides:
+          - db_type: "uuid"
+            go_type:
+              import: "github.com/google/uuid"
+              type: "UUID"
+          - db_type: "timestamptz"
+            go_type:
+              type: "time.Time"

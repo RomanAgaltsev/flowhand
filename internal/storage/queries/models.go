@@ -5,13 +5,15 @@
 package queries
 
 import (
-	"github.com/jackc/pgx/v5/pgtype"
+	"time"
+
+	"github.com/google/uuid"
 )
 
 type Task struct {
-	ID             pgtype.UUID        `json:"id"`
-	IdempotencyKey *string            `json:"idempotency_key"`
-	Payload        []byte             `json:"payload"`
-	Status         string             `json:"status"`
-	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	ID             uuid.UUID `json:"id"`
+	IdempotencyKey *string   `json:"idempotency_key"`
+	Payload        []byte    `json:"payload"`
+	Status         string    `json:"status"`
+	CreatedAt      time.Time `json:"created_at"`
 }
