@@ -6,7 +6,7 @@ CREATE TABLE tasks (
     idempotency_key TEXT,
     payload JSONB NOT NULL DEFAULT '{}'::JSONB,
     status TEXT NOT NULL DEFAULT 'pending',
-    creatde_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE UNIQUE INDEX tasks_idempotency_key_uniq

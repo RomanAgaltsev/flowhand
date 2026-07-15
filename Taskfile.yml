@@ -10,6 +10,7 @@ vars:
   PROTOC_GEN_GO_GRPC_VERSION: 'v1.6.1'
   OGEN_VERSION: 'v1.23.0'
   GOOSE_VERSION: 'v3.27.2'
+  SQLC_VERSION: 'v1.31.1'
 
   BIN_DIR: '{{.ROOT_DIR | replace "\\" "/"}}/bin'
   EXE_EXT: '{{if eq OS "windows"}}.exe{{end}}'
@@ -21,6 +22,7 @@ vars:
   PROTOC_GEN_GO_GRPC: '{{.BIN_DIR}}/protoc-gen-go-grpc{{.EXE_EXT}}'
   OGEN: '{{.BIN_DIR}}/ogen{{.EXE_EXT}}'
   GOOSE: '{{.BIN_DIR}}/goose{{.EXE_EXT}}'
+  SQLC: '{{.BIN_DIR}}/sqlc{{.EXE_EXT}}'
 
 
   MODULE: github.com/RomanAgaltsev/flowhand
@@ -82,9 +84,15 @@ tasks:
     status:
       - test -x {{.GOOSE}}
 
+  sqlc:install:
+    desc: install sqlc
+    cmds:
+      - echo 'installing sqlc...'
+      - GOBIN={{.BIN_DIR}} go install github.com/sqlc-dev/sqlc/cmd/sqlc@{{.SQLC_VERSION}}
+
   setup:
     desc: install all tools
-    deps: [formatters:install, golangci-lint:install, buf:install, proto:install-plugins, ogen:install, goose:install]
+    deps: [formatters:install, golangci-lint:install, buf:install, proto:install-plugins, ogen:install, goose:install, sqlc:install]
 
   format:
     desc: format code (gofumpt + gci)
@@ -125,11 +133,17 @@ tasks:
       - echo 'generate Go-code from OpenAPI...
       - '{{.OGEN}} -target ./pkg/openapi/flowhand/v1 -package flowhandv1 -clean ./api/flowhand/v1/flowhand.openapi.yaml 2>/dev/null'
 
+  sqlc:gen:
+    desc: generate code with sqlc
+    cmds:
+      - '{{.SQLC}} generate'
+
   gen:
     desc: generate all code
     cmds:
       - task: proto:gen
       - task: ogen:gen
+      - task: sqlc:gen
 
   deps:update:
     desc: update dependencies
