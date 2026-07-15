@@ -126,12 +126,13 @@ tasks:
       - '{{.BUF}} generate'
 
   ogen:gen:
-    desc: generate Go-code from OpenAPI
+    desc: regenerate ogen server code
+    sources: ['api/openapi.yaml']
+    generates: ['internal/api/oas/*.go']
     deps: [ogen:install]
-    dir: shared
     cmds:
-      - echo 'generate Go-code from OpenAPI...
-      - '{{.OGEN}} -target ./pkg/openapi/flowhand/v1 -package flowhandv1 -clean ./api/flowhand/v1/flowhand.openapi.yaml 2>/dev/null'
+      - echo 'generating ogen server code from OpenAPI...'
+      - '{{.OGEN}} --target internal/api/oas --package oas --clean api/openapi.yaml'
 
   sqlc:gen:
     desc: generate code with sqlc
