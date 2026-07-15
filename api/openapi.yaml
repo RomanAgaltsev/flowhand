@@ -1,0 +1,66 @@
+openapi: 3.1.1
+info:
+  title: flowhand
+  version: 0.1.0
+  description: Task and workflow orchestration.
+servers:
+  - url: http://localhost:8080
+paths:
+  /v1/tasks:
+    post:
+      operationId: createTask
+      summary: Submit a task
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateTaskRequest' }
+      responses:
+        '201':
+          description: Task accepted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Task' }
+        '400':
+          description: Invalid input
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+components:
+  schemas:
+    CreateTaskRequest:
+      type: object
+      required: [handler]
+      properties:
+        handler:
+          type: string
+          minLength: 1
+          maxLength: 128
+        payload:
+          type: object
+          additionalProperties: true
+        idempotency_key:
+          type: string
+          minLength: 1
+          maxLength: 128
+    Task:
+      type: object
+      required: [id, status, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [pending, running, succeeded, failed, cancelled]
+        created_at: { type: string, format: date-time }
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string }
+        message: { type: string }
