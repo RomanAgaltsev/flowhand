@@ -2,6 +2,7 @@ package obs
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/pprof"
 	"time"
@@ -18,7 +19,10 @@ import (
 )
 
 func NewMeterProvider(ctx context.Context, cfg *config.Config) (*metric.MeterProvider, error) {
-	meterExporter, err := otlpmetricgrpc.New(ctx)
+	meterExporter, err := otlpmetricgrpc.New(ctx,
+		otlpmetricgrpc.WithEndpoint(cfg.Obs.OTLPEndpoint),
+		otlpmetricgrpc.WithInsecure(),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -42,6 +46,9 @@ func NewMeterProvider(ctx context.Context, cfg *config.Config) (*metric.MeterPro
 			deploymentEnvironmentName,
 		),
 	)
+	if err != nil {
+		return nil, fmt.Errorf("merge resource: %w", err)
+	}
 
 	view := metric.NewView(
 		metric.Instrument{

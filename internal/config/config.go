@@ -49,14 +49,14 @@ func Load(path string, flags *pflag.FlagSet) (*Config, error) {
 		"env":                   "dev",
 		"version":               "dev",
 		"http.addr":             ":8080",
-		"http.shutdown_timeout": 100,
+		"http.shutdown_timeout": "10s",
 		"db.dsn":                "",
 		"db.max_conns":          10,
 		"db.min_conns":          2,
 		"db.max_conn_lifetime":  0,
 		"obs.log_level":         "info",
 		"obs.log_format":        "json",
-		"obs.otlp_endpoint":     "localhost:50050",
+		"obs.otlp_endpoint":     "localhost:4317",
 		"obs.service_name":      "flowhand",
 	}, "."), nil)
 	if err != nil {

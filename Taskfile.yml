@@ -26,7 +26,7 @@ vars:
 
 
   MODULE: github.com/RomanAgaltsev/flowhand
-  BIN: bin/flowhand
+  BIN: bin/flowhand{{.EXE_EXT}}
   COMPOSE_FILE: deploy/compose/docker-compose.yml
 
 tasks:

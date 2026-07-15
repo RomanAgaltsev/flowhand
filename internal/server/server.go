@@ -16,7 +16,7 @@ import (
 	"github.com/RomanAgaltsev/flowhand/internal/config"
 )
 
-func Run(ctx context.Context, cfg config.Config, h *api.Handler) error {
+func Run(ctx context.Context, cfg *config.Config, h *api.Handler) error {
 	oasSrv, err := oas.NewServer(h)
 	if err != nil {
 		return fmt.Errorf("new oas server: %w", err)
@@ -53,6 +53,6 @@ func Run(ctx context.Context, cfg config.Config, h *api.Handler) error {
 	case <-ctx.Done():
 		sctx, cancel := context.WithTimeout(context.Background(), cfg.HTTP.ShutdownTimeout)
 		defer cancel()
-		return srv.Shutdown(sctx) // drains in-flight requests, then returns
+		return srv.Shutdown(sctx) //
 	}
 }
