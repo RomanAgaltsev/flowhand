@@ -1,11 +1,145 @@
 version: "3"
 
 vars:
+  GO_VERSION: '1.26.5'
+  GOLANGCI_LINT_VERSION: 'v2.12.2'
+  GCI_VERSION: 'v0.14.0'
+  GOFUMPT_VERSION: 'v0.10.0'
+  BUF_VERSION: '1.71.0'
+  PROTOC_GEN_GO_VERSION: 'v1.36.11'
+  PROTOC_GEN_GO_GRPC_VERSION: 'v1.6.1'
+  OGEN_VERSION: 'v1.23.0'
+  GOOSE_VERSION: 'v3.27.2'
+
+  BIN_DIR: '{{.ROOT_DIR | replace "\\" "/"}}/bin'
+  EXE_EXT: '{{if eq OS "windows"}}.exe{{end}}'
+  GOLANGCI_LINT: '{{.BIN_DIR}}/golangci-lint{{.EXE_EXT}}'
+  GCI: '{{.BIN_DIR}}/gci{{.EXE_EXT}}'
+  GOFUMPT: '{{.BIN_DIR}}/gofumpt{{.EXE_EXT}}'
+  BUF: '{{.BIN_DIR}}/buf{{.EXE_EXT}}'
+  PROTOC_GEN_GO: '{{.BIN_DIR}}/protoc-gen-go{{.EXE_EXT}}'
+  PROTOC_GEN_GO_GRPC: '{{.BIN_DIR}}/protoc-gen-go-grpc{{.EXE_EXT}}'
+  OGEN: '{{.BIN_DIR}}/ogen{{.EXE_EXT}}'
+  GOOSE: '{{.BIN_DIR}}/goose{{.EXE_EXT}}'
+
+
   MODULE: github.com/RomanAgaltsev/flowhand
   BIN: bin/flowhand
   COMPOSE_FILE: deploy/compose/docker-compose.yml
 
 tasks:
+  formatters:install:
+    desc: install gofumpt and gci
+    cmds:
+      - echo 'installing gofumpt...'
+      - GOBIN={{.BIN_DIR}} go install mvdan.cc/gofumpt@{{.GOFUMPT_VERSION}}
+      - echo 'installing gci...'
+      - GOBIN={{.BIN_DIR}} go install github.com/daixiang0/gci@{{.GCI_VERSION}}
+    status:
+      - ls {{.GOFUMPT}} >/dev/null 2>&1
+      - ls {{.GCI}} >/dev/null 2>&1
+
+  golangci-lint:install:
+    desc: install golangci-lint
+    cmds:
+      - echo 'installing golangci-lint...'
+      - GOBIN={{.BIN_DIR}} go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@{{.GOLANGCI_LINT_VERSION}}
+    status:
+      - ls {{.GOLANGCI_LINT}} >/dev/null 2>&1
+
+  buf:install:
+    desc: install buf
+    cmds:
+      - echo 'installing buf...'
+      - GOBIN={{.BIN_DIR}} go install github.com/bufbuild/buf/cmd/buf@v{{.BUF_VERSION}}
+    status:
+      - ls {{.BUF}} >/dev/null 2>&1
+
+  proto:install-plugins:
+    desc: install protoc-plugins
+    cmds:
+      - echo 'installing protoc-gen-go...'
+      - GOBIN={{.BIN_DIR}} go install google.golang.org/protobuf/cmd/protoc-gen-go@{{.PROTOC_GEN_GO_VERSION}}
+      - echo 'installing protoc-gen-go-grpc...'
+      - GOBIN={{.BIN_DIR}} go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@{{.PROTOC_GEN_GO_GRPC_VERSION}}
+    status:
+      - ls {{.PROTOC_GEN_GO}} >/dev/null 2>&1
+      - ls {{.PROTOC_GEN_GO_GRPC}} >/dev/null 2>&1
+
+  ogen:install:
+    desc: install ogen
+    cmds:
+      - echo 'installing ogen...'
+      - GOBIN={{.BIN_DIR}} go install github.com/ogen-go/ogen/cmd/ogen@{{.OGEN_VERSION}}
+    status:
+      - ls {{.OGEN}} >/dev/null 2>&1
+
+  goose:install:
+    desc: install goose
+    cmds:
+      - echo 'installing goose...'
+      - GOBIN={{.BIN_DIR}} go install github.com/pressly/goose/v3/cmd/goose@{{.GOOSE_VERSION}}
+    status:
+      - test -x {{.GOOSE}}
+
+  setup:
+    desc: install all tools
+    deps: [formatters:install, golangci-lint:install, buf:install, proto:install-plugins, ogen:install, goose:install]
+
+  format:
+    desc: format code (gofumpt + gci)
+    deps: [formatters:install]
+    cmds:
+      - echo 'formatting code with gofumpt...'
+      - bash -c "find . -type f -name '*.go' ! -path '*/mocks/*' ! -path '*/pkg/proto/*' ! -path '*/pkg/openapi/*' -exec {{.GOFUMPT}} -extra -w {} +"
+      - echo 'sorting imports with gci...'
+      - bash -c "find . -type f -name '*.go' ! -path '*/mocks/*' ! -path '*/pkg/proto/*' ! -path '*/pkg/openapi/*' -exec {{.GCI}} write -s standard -s default -s 'prefix(github.com/RomanAgaltsev/flowhand)' {} +"
+
+  lint:
+    desc: run golangci-lint
+    deps: [golangci-lint:install]
+    cmds:
+      - '{{.GOLANGCI_LINT}} run --allow-parallel-runners ./... --config=.golangci.yml'
+
+  proto:lint:
+    desc: check .proto-files with linter
+    deps: [buf:install, proto:install-plugins]
+    dir: shared/proto
+    cmds:
+      - echo 'checking .proto-files...'
+      - '{{.BUF}} lint'
+
+  proto:gen:
+    desc: generate Go-code from .proto
+    deps: [buf:install, proto:install-plugins]
+    dir: shared/proto
+    cmds:
+      - echo 'generating Go-code from .proto...'
+      - '{{.BUF}} generate'
+
+  ogen:gen:
+    desc: generate Go-code from OpenAPI
+    deps: [ogen:install]
+    dir: shared
+    cmds:
+      - echo 'generate Go-code from OpenAPI...
+      - '{{.OGEN}} -target ./pkg/openapi/flowhand/v1 -package flowhandv1 -clean ./api/flowhand/v1/flowhand.openapi.yaml 2>/dev/null'
+
+  gen:
+    desc: generate all code
+    cmds:
+      - task: proto:gen
+      - task: ogen:gen
+
+  deps:update:
+    desc: update dependencies
+    cmds:
+      - echo '🔄 Синхронизируем go.work...'
+      - go work sync
+      - echo '🔄 Обновляем зависимости в модулях...'
+      - for mod in {{.MODULES}}; do (cd "$mod" && go mod tidy -compat={{.GO_VERSION}}); done
+
+
   default:
     desc: list tasks
     cmds:
@@ -32,11 +166,6 @@ tasks:
     desc: run unit tests with race detector
     cmds:
       - go test -race -count=1 ./...
-
-  lint:
-    desc: run golangci-lint
-    cmds:
-      - golangci-lint run
 
   vuln:
     desc: run govulncheck
