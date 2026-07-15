@@ -167,6 +167,11 @@ tasks:
     cmds:
       - go test -race -count=1 ./...
 
+  test:int:
+    desc: run integration tests (requires Docker)
+    cmds:
+      - go test -race -tags=integration -count=1 ./...
+
   vuln:
     desc: run govulncheck
     cmds:
