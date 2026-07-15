@@ -33,7 +33,9 @@ func TestCreateTask_HappyPath(t *testing.T) {
 
 	resp, err := h.CreateTask(context.Background(), &oas.CreateTaskRequest{Handler: "echo"})
 	require.NoError(t, err)
-	assert.Equal(t, "pending", string(resp.Status))
+	task, ok := resp.(*oas.Task) // narrow the union to the 200 case
+	require.True(t, ok)
+	assert.Equal(t, "pending", string(task.Status))
 }
 
 func TestCreateTask_DBError(t *testing.T) {

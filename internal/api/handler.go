@@ -29,7 +29,7 @@ func NewHandler(q Querier, log *slog.Logger) *Handler {
 	}
 }
 
-func (h *Handler) CreateTask(ctx context.Context, req *oas.CreateTaskRequest) (*oas.Task, error) {
+func (h *Handler) CreateTask(ctx context.Context, req *oas.CreateTaskRequest) (oas.CreateTaskRes, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return nil, fmt.Errorf("generate id: %w", err)
