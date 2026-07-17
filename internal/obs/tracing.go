@@ -2,6 +2,7 @@ package obs
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -32,7 +33,7 @@ func NewTracerProvider(ctx context.Context, cfg *config.Config) (*trace.TracerPr
 		deploymentEnvironmentName = semconv.DeploymentEnvironmentNameProduction
 	}
 
-	resource, err := resource.Merge(
+	res, err := resource.Merge(
 		resource.Default(),
 		resource.NewWithAttributes(
 			semconv.SchemaURL,
@@ -41,12 +42,15 @@ func NewTracerProvider(ctx context.Context, cfg *config.Config) (*trace.TracerPr
 			deploymentEnvironmentName,
 		),
 	)
+	if err != nil {
+		return nil, fmt.Errorf("merge resource: %w", err)
+	}
 
 	traceProvider := trace.NewTracerProvider(
 		trace.WithBatcher(traceExporter,
 			trace.WithBatchTimeout(time.Second),
 		),
-		trace.WithResource(resource),
+		trace.WithResource(res),
 	)
 
 	return traceProvider, nil

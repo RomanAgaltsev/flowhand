@@ -30,7 +30,7 @@ var serverCmd = &cobra.Command{
 		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 
-		shutdown, err := obs.Init(ctx, cfg)
+		shutdown, reg, err := obs.Init(ctx, cfg)
 		if err != nil {
 			return fmt.Errorf("init obs: %w", err)
 		}
@@ -49,7 +49,7 @@ var serverCmd = &cobra.Command{
 		q := queries.New(pool)
 		h := api.NewHandler(q, slog.Default())
 
-		return server.Run(ctx, cfg, h)
+		return server.Run(ctx, cfg, h, reg)
 
 	},
 }

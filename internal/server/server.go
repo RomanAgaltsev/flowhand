@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/pprof"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
@@ -16,15 +18,19 @@ import (
 	"github.com/RomanAgaltsev/flowhand/internal/config"
 )
 
-func Run(ctx context.Context, cfg *config.Config, h *api.Handler) error {
+func Run(ctx context.Context, cfg *config.Config, h *api.Handler, reg *prometheus.Registry) error {
 	oasSrv, err := oas.NewServer(h)
 	if err != nil {
 		return fmt.Errorf("new oas server: %w", err)
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle("/", otelhttp.NewHandler(oasSrv, "flowhand.http"))
-	mux.Handle("/metrics", promhttp.Handler())
+	mux.Handle("/", otelhttp.NewHandler(oasSrv, "flowhand.http",
+		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
+			return r.Method + " " + r.URL.Path
+		}),
+	))
+	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{Registry: reg}))
 	mux.HandleFunc("/debug/pprof/", pprof.Index)
 	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
 	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
@@ -40,6 +46,7 @@ func Run(ctx context.Context, cfg *config.Config, h *api.Handler) error {
 
 	errCh := make(chan error, 1)
 	go func() {
+		slog.InfoContext(ctx, "listening", "addr", cfg.HTTP.Addr)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 			return

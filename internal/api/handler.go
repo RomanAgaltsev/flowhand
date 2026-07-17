@@ -7,10 +7,13 @@ import (
 	"log/slog"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel"
 
 	"github.com/RomanAgaltsev/flowhand/internal/api/oas"
 	"github.com/RomanAgaltsev/flowhand/internal/storage/queries"
 )
+
+var tracer = otel.Tracer("github.com/RomanAgaltsev/flowhand/internal/api")
 
 // Querier is a subset of the sqlc-generated Queries - only what this handler needs.
 type Querier interface {
@@ -30,6 +33,9 @@ func NewHandler(q Querier, log *slog.Logger) *Handler {
 }
 
 func (h *Handler) CreateTask(ctx context.Context, req *oas.CreateTaskRequest) (oas.CreateTaskRes, error) {
+	ctx, span := tracer.Start(ctx, "createTask")
+	defer span.End()
+
 	id, err := uuid.NewV7()
 	if err != nil {
 		return nil, fmt.Errorf("generate id: %w", err)

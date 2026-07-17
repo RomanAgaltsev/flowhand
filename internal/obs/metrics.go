@@ -1,30 +1,24 @@
 package obs
 
 import (
-	"context"
 	"fmt"
-	"net/http"
-	"net/http/pprof"
 	"time"
 
 	"go.opentelemetry.io/contrib/instrumentation/runtime"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
+	otelprom "go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
 
 	"github.com/RomanAgaltsev/flowhand/internal/config"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
-func NewMeterProvider(ctx context.Context, cfg *config.Config) (*metric.MeterProvider, error) {
-	meterExporter, err := otlpmetricgrpc.New(ctx,
-		otlpmetricgrpc.WithEndpoint(cfg.Obs.OTLPEndpoint),
-		otlpmetricgrpc.WithInsecure(),
-	)
+func NewMeterProvider(cfg *config.Config, reg prometheus.Registerer) (*metric.MeterProvider, error) {
+	exporter, err := otelprom.New(otelprom.WithRegisterer(reg))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("prometheus exporter: %w", err)
 	}
 
 	var deploymentEnvironmentName attribute.KeyValue
@@ -37,7 +31,7 @@ func NewMeterProvider(ctx context.Context, cfg *config.Config) (*metric.MeterPro
 		deploymentEnvironmentName = semconv.DeploymentEnvironmentNameProduction
 	}
 
-	resource, err := resource.Merge(
+	res, err := resource.Merge(
 		resource.Default(),
 		resource.NewWithAttributes(
 			semconv.SchemaURL,
@@ -62,26 +56,17 @@ func NewMeterProvider(ctx context.Context, cfg *config.Config) (*metric.MeterPro
 	)
 
 	meterProvider := metric.NewMeterProvider(
-		metric.WithReader(
-			metric.NewPeriodicReader(meterExporter),
-		),
-		metric.WithResource(resource),
+		metric.WithReader(exporter),
+		metric.WithResource(res),
 		metric.WithView(view),
 	)
 
-	err = runtime.Start(runtime.WithMinimumReadMemStatsInterval(5 * time.Second))
-	if err != nil {
-		return nil, err
+	if err := runtime.Start(
+		runtime.WithMeterProvider(meterProvider),
+		runtime.WithMinimumReadMemStatsInterval(5*time.Second),
+	); err != nil {
+		return nil, fmt.Errorf("runtime metrics: %w", err)
 	}
 
 	return meterProvider, nil
-}
-
-func DebugHandler() http.Handler {
-	mux := http.NewServeMux()
-
-	mux.Handle("/metrics", promhttp.Handler())
-	mux.HandleFunc("/debug/pprof/", pprof.Index)
-
-	return mux
 }

@@ -74,9 +74,12 @@ func Load(path string, flags *pflag.FlagSet) (*Config, error) {
 	if err := k.Load(env.Provider(".", env.Opt{
 		Prefix: "FLOWHAND_",
 		TransformFunc: func(key, value string) (string, any) {
-			key = strings.TrimPrefix(key, "FLOWHAND_") // HTTP_ADDR
-			key = strings.ToLower(key)                 // http_addr
-			key = strings.ReplaceAll(key, "_", ".")    // http.addr
+			key = strings.ToLower(strings.TrimPrefix(key, "FLOWHAND_"))
+			// Only the first underscore separates section from key:
+			// OBS_LOG_FORMAT -> obs.log_format, not obs.log.format.
+			if i := strings.Index(key, "_"); i >= 0 {
+				key = key[:i] + "." + key[i+1:]
+			}
 			return key, value
 		},
 	}), nil); err != nil {
