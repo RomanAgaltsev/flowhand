@@ -4,3 +4,7 @@ package oas
 type CreateTaskRes interface {
 	createTaskRes()
 }
+
+type GetTaskRes interface {
+	getTaskRes()
+}

@@ -25,6 +25,10 @@ func (f *fakeQuerier) CreateTask(context.Context, queries.CreateTaskParams) (que
 	return f.row, f.err
 }
 
+func (f *fakeQuerier) GetTaskByID(ctx context.Context, id uuid.UUID) (queries.Task, error) {
+	return f.row, f.err
+}
+
 func TestCreateTask_HappyPath(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	h := api.NewHandler(&fakeQuerier{row: queries.Task{
@@ -42,4 +46,20 @@ func TestCreateTask_DBError(t *testing.T) {
 	h := api.NewHandler(&fakeQuerier{err: errors.New("boom")}, slog.Default())
 	_, err := h.CreateTask(context.Background(), &oas.CreateTaskRequest{Handler: "echo"})
 	require.ErrorContains(t, err, "insert task")
+}
+
+func TestGetTask_HappyPath(t *testing.T) {
+	id := uuid.Must(uuid.NewV7())
+
+	now := time.Now().UTC().Truncate(time.Second)
+	h := api.NewHandler(&fakeQuerier{row: queries.Task{
+		ID: id, Status: "pending", CreatedAt: now,
+	}}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	resp, err := h.GetTask(context.Background(), oas.GetTaskParams{ID: id})
+	require.NoError(t, err)
+	task, ok := resp.(*oas.Task)
+	require.True(t, ok)
+	assert.Equal(t, id, task.ID)
+	assert.Equal(t, "pending", string(task.Status))
 }

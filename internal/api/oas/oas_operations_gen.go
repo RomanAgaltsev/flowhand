@@ -7,4 +7,5 @@ type OperationName = string
 
 const (
 	CreateTaskOperation OperationName = "CreateTask"
+	GetTaskOperation    OperationName = "GetTask"
 )

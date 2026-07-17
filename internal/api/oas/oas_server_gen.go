@@ -14,6 +14,10 @@ type Handler interface {
 	//
 	// POST /v1/tasks
 	CreateTask(ctx context.Context, req *CreateTaskRequest) (CreateTaskRes, error)
+	// GetTask implements getTask operation.
+	//
+	// GET /v1/tasks/{id}
+	GetTask(ctx context.Context, params GetTaskParams) (GetTaskRes, error)
 }
 
 // Server implements http server based on OpenAPI v3 specification and

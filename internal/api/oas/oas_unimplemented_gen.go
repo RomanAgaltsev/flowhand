@@ -21,3 +21,10 @@ var _ Handler = UnimplementedHandler{}
 func (UnimplementedHandler) CreateTask(ctx context.Context, req *CreateTaskRequest) (r CreateTaskRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
+
+// GetTask implements getTask operation.
+//
+// GET /v1/tasks/{id}
+func (UnimplementedHandler) GetTask(ctx context.Context, params GetTaskParams) (r GetTaskRes, _ error) {
+	return r, ht.ErrNotImplemented
+}

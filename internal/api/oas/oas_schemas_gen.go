@@ -92,6 +92,8 @@ func (s *Error) SetMessage(val string) {
 	s.Message = val
 }
 
+func (*Error) getTaskRes() {}
+
 // NewOptCreateTaskRequestPayload returns new OptCreateTaskRequestPayload with value set to v.
 func NewOptCreateTaskRequestPayload(v CreateTaskRequestPayload) OptCreateTaskRequestPayload {
 	return OptCreateTaskRequestPayload{
@@ -222,6 +224,7 @@ func (s *Task) SetCreatedAt(val time.Time) {
 }
 
 func (*Task) createTaskRes() {}
+func (*Task) getTaskRes()    {}
 
 type TaskStatus string
 

@@ -14,23 +14,42 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/CreateTaskRequest' }
+            schema: { $ref: "#/components/schemas/CreateTaskRequest" }
       responses:
-        '201':
+        "201":
           description: Task accepted
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Task' }
-        '400':
+              schema: { $ref: "#/components/schemas/Task" }
+        "400":
           description: Invalid input
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Error' }
-        '500':
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
           description: Server error
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Error' }
+              schema: { $ref: "#/components/schemas/Error" }
+  /v1/tasks/{id}:
+    get:
+      operationId: getTask
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Task state
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
 components:
   schemas:
