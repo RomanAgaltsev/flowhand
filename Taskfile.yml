@@ -118,11 +118,13 @@ tasks:
       - '{{.BUF}} lint'
 
   proto:gen:
-    desc: generate Go-code from .proto
+    desc: regenerate protobuf
     deps: [buf:install, proto:install-plugins]
-    dir: shared/proto
+    sources: ['api/proto/**/*.proto', 'buf.yaml', 'buf.gen.yaml']
+    generates: ['api/proto/gen/**/*.go']
     cmds:
       - echo 'generating Go-code from .proto...'
+      - '{{.BUF}} lint'
       - '{{.BUF}} generate'
 
   ogen:gen:
