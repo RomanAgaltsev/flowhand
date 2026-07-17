@@ -1,5 +1,7 @@
 # flowhand
 
+![ci](https://github.com/<you>/flowhand/actions/workflows/ci.yml/badge.svg)
+
 **Distributed task & workflow orchestration service in Go** — built as a single,
 self-contained service that fuses a task queue (priorities, retries, cron,
 idempotency) with a declarative workflow DAG engine (fan-out, fan-in,
