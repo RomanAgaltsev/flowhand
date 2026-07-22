@@ -192,3 +192,15 @@ services:
     ports: ["3000:3000"]
     depends_on: [prometheus, tempo, loki]
     networks: [flowhand]
+
+  flowhand-demo:
+    image: flowhand-demo:dev
+    build: { context: ../.., dockerfile: cmd/flowhand-demo/Dockerfile }
+    environment:
+      - FLOWHAND_URL=http://host.docker.internal:8080
+      - DEMO_INTERVAL=1s
+      - DEMO_METRICS_ADDR=:8081
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    networks: [flowhand]

@@ -9,3 +9,7 @@ scrape_configs:
     static_configs:
       - targets: ["host.docker.internal:8080"]
     # flowhand runs on your host in dev; inside compose use container name
+  - job_name: flowhand-demo
+    static_configs:
+      - targets: ["flowhand-demo:8081"]
+    # in-network: compose DNS resolves the service name

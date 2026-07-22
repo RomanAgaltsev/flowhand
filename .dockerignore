@@ -1,0 +1,15 @@
+.git/
+.github/
+bin/
+*.exe
+*.test
+*.out
+coverage.*
+docs/
+deploy/
+testdata/
+*_test.go
+.idea/
+.vscode/
+.env
+.env.local

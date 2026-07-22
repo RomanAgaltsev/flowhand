@@ -249,3 +249,9 @@ tasks:
     desc: roll back one migration
     cmds:
       - goose -dir migrations postgres "$FLOWHAND_DB_DSN" down
+
+  demo:
+    desc: launch the reference producer into a running stack
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} up -d --build flowhand-demo
+      - echo "submit rate - Grafana Explore, Prometheus datasource - rate(flowhand_demo_submits_total[1m])"
