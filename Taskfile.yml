@@ -156,7 +156,6 @@ tasks:
       - echo '🔄 Обновляем зависимости в модулях...'
       - for mod in {{.MODULES}}; do (cd "$mod" && go mod tidy -compat={{.GO_VERSION}}); done
 
-
   default:
     desc: list tasks
     cmds:
@@ -188,6 +187,32 @@ tasks:
     desc: run integration tests (requires Docker)
     cmds:
       - go test -race -tags=integration -count=1 ./...
+
+  fuzz:
+    desc: run each fuzz target for FUZZTIME (default 30s)
+    vars:
+      FUZZTIME: '{{.FUZZTIME | default "30s"}}'
+    silent: true
+    cmds:
+      # -fuzz rejects multiple packages and refuses to run when its regex
+      # matches more than one target, so every target gets its own invocation.
+      - cmd: |
+          found=0
+          for pkg in $(go list ./...); do
+            for name in $(go test -list='^Fuzz' "$pkg"); do
+              case "$name" in
+                Fuzz*)
+                  found=$((found + 1))
+                  echo "fuzzing $name in $pkg for {{.FUZZTIME}}..."
+                  go test -run='^$' -fuzz="^$name\$" -fuzztime={{.FUZZTIME}} "$pkg"
+                  ;;
+              esac
+            done
+          done
+          if [ "$found" -eq 0 ]; then
+            echo 'no fuzz targets found' >&2
+            exit 1
+          fi
 
   vuln:
     desc: run govulncheck
