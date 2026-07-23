@@ -77,12 +77,16 @@ func (h *Handler) GetTask(ctx context.Context, params oas.GetTaskParams) (oas.Ge
 	defer span.End()
 
 	row, err := h.q.GetTaskByID(ctx, params.ID)
-	if err != nil && errors.Is(err, pgx.ErrNoRows) {
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			h.log.ErrorContext(ctx, "get task failed", "err", err)
+			return &oas.Error{
+				Code:    strconv.Itoa(http.StatusNotFound),
+				Message: "task ID not found",
+			}, nil
+		}
 		h.log.ErrorContext(ctx, "get task failed", "err", err)
-		return &oas.Error{
-			Code:    strconv.Itoa(http.StatusNotFound),
-			Message: "task ID not found",
-		}, nil
+		return nil, err
 	}
 
 	return &oas.Task{
