@@ -90,6 +90,7 @@ func Load(path string, flags *pflag.FlagSet) (*Config, error) {
 	if flags != nil {
 		if err := k.Load(posflag.ProviderWithValue(flags, ".", k,
 			func(key, value string) (string, any) {
+				key = strings.ReplaceAll(key, "-", "_")
 				m := map[string]string{
 					"env":               "env",
 					"version":           "version",

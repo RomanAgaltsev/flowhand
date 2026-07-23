@@ -4,6 +4,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -31,4 +32,15 @@ func TestLoad_FileAndEnv_EnvWins(t *testing.T) {
 	cfg, err := config.Load(tmp, nil)
 	require.NoError(t, err)
 	assert.Equal(t, ":8888", cfg.HTTP.Addr)
+}
+
+func TestLoad_FlagOverridesEnv(t *testing.T) {
+	t.Setenv("FLOWHAND_OBS_LOG_LEVEL", "warn")
+	fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	fs.String("log-level", "info", "")
+	require.NoError(t, fs.Parse([]string{"--log-level=debug"}))
+
+	cfg, err := config.Load("", fs)
+	require.NoError(t, err)
+	assert.Equal(t, "debug", cfg.Obs.LogLevel)
 }
