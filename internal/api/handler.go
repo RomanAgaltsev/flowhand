@@ -79,12 +79,14 @@ func (h *Handler) GetTask(ctx context.Context, params oas.GetTaskParams) (oas.Ge
 	row, err := h.q.GetTaskByID(ctx, params.ID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			h.log.ErrorContext(ctx, "get task failed", "err", err)
 			return &oas.Error{
 				Code:    strconv.Itoa(http.StatusNotFound),
 				Message: "task ID not found",
 			}, nil
 		}
+		// Any other error (conn dead, timeout, cancel, pool-exhausted) is a real
+		// failure. Returning it — not a zero-value Task — is the whole point; it
+		// becomes a JSON 500 once getTask declares one.
 		h.log.ErrorContext(ctx, "get task failed", "err", err)
 		return nil, err
 	}

@@ -12,6 +12,7 @@ import (
 	"github.com/RomanAgaltsev/flowhand/internal/api/oas"
 	"github.com/RomanAgaltsev/flowhand/internal/storage/queries"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -33,7 +34,7 @@ func TestCreateTask_HappyPath(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	h := api.NewHandler(&fakeQuerier{row: queries.Task{
 		ID: uuid.Must(uuid.NewV7()), Status: "pending", CreatedAt: now,
-	}}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	}}, discardLogger())
 
 	resp, err := h.CreateTask(context.Background(), &oas.CreateTaskRequest{Handler: "echo"})
 	require.NoError(t, err)
@@ -54,7 +55,7 @@ func TestGetTask_HappyPath(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	h := api.NewHandler(&fakeQuerier{row: queries.Task{
 		ID: id, Status: "pending", CreatedAt: now,
-	}}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	}}, discardLogger())
 
 	resp, err := h.GetTask(context.Background(), oas.GetTaskParams{ID: id})
 	require.NoError(t, err)
@@ -62,4 +63,24 @@ func TestGetTask_HappyPath(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, id, task.ID)
 	assert.Equal(t, "pending", string(task.Status))
+}
+
+func TestGetTask_NotFound(t *testing.T) {
+	h := api.NewHandler(&fakeQuerier{err: pgx.ErrNoRows}, discardLogger())
+	resp, err := h.GetTask(context.Background(), oas.GetTaskParams{ID: uuid.Must(uuid.NewV7())})
+	require.NoError(t, err)
+	e, ok := resp.(*oas.Error)
+	require.True(t, ok)
+	assert.Equal(t, "404", e.Code)
+}
+
+func TestGetTask_DBError(t *testing.T) {
+	h := api.NewHandler(&fakeQuerier{err: errors.New("connection refused")}, discardLogger())
+	_, err := h.GetTask(context.Background(), oas.GetTaskParams{ID: uuid.Must(uuid.NewV7())})
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, pgx.ErrNoRows) // proves it took the non-404 branch
+}
+
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
