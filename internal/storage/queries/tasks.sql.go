@@ -54,3 +54,22 @@ func (q *Queries) GetTaskByID(ctx context.Context, id uuid.UUID) (Task, error) {
 	)
 	return i, err
 }
+
+const getTaskByIdempotencyKey = `-- name: GetTaskByIdempotencyKey :one
+SELECT id, idempotency_key, payload, status, created_at
+FROM tasks
+WHERE idempotency_key = $1
+`
+
+func (q *Queries) GetTaskByIdempotencyKey(ctx context.Context, idempotencyKey *string) (Task, error) {
+	row := q.db.QueryRow(ctx, getTaskByIdempotencyKey, idempotencyKey)
+	var i Task
+	err := row.Scan(
+		&i.ID,
+		&i.IdempotencyKey,
+		&i.Payload,
+		&i.Status,
+		&i.CreatedAt,
+	)
+	return i, err
+}

@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"go.opentelemetry.io/otel"
 
 	"github.com/RomanAgaltsev/flowhand/internal/api/oas"
@@ -23,6 +24,7 @@ var tracer = otel.Tracer("github.com/RomanAgaltsev/flowhand/internal/api")
 type Querier interface {
 	CreateTask(ctx context.Context, arg queries.CreateTaskParams) (queries.Task, error)
 	GetTaskByID(ctx context.Context, id uuid.UUID) (queries.Task, error)
+	GetTaskByIdempotencyKey(ctx context.Context, idempotencyKey *string) (queries.Task, error)
 }
 
 type Handler struct {
@@ -61,6 +63,10 @@ func (h *Handler) CreateTask(ctx context.Context, req *oas.CreateTaskRequest) (o
 	}
 	row, err := h.q.CreateTask(ctx, createTaskParams)
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return h.replay(ctx, createTaskParams.IdempotencyKey)
+		}
 		h.log.ErrorContext(ctx, "create task failed", "err", err)
 		return &oas.CreateTaskInternalServerError{
 			Code:    strconv.Itoa(http.StatusInternalServerError),
@@ -100,6 +106,27 @@ func (h *Handler) GetTask(ctx context.Context, params oas.GetTaskParams) (oas.Ge
 	return &oas.Task{
 		ID:        row.ID,
 		Status:    oas.TaskStatus(row.Status),
+		CreatedAt: row.CreatedAt,
+	}, nil
+}
+
+func (h *Handler) replay(ctx context.Context, key *string) (oas.CreateTaskRes, error) {
+	if key == nil {
+		return &oas.CreateTaskInternalServerError{
+			Code:    strconv.Itoa(http.StatusInternalServerError),
+			Message: "internal error",
+		}, nil
+	}
+	row, err := h.q.GetTaskByIdempotencyKey(ctx, *key)
+	if err != nil {
+		return &oas.CreateTaskInternalServerError{
+			Code:    strconv.Itoa(http.StatusInternalServerError),
+			Message: "internal error",
+		}, nil
+	}
+	&oas.Task{
+		ID: row.ID,
+		Status: oas.TaskStatus(row.Status),
 		CreatedAt: row.CreatedAt,
 	}, nil
 }

@@ -30,6 +30,10 @@ func (f *fakeQuerier) GetTaskByID(ctx context.Context, id uuid.UUID) (queries.Ta
 	return f.row, f.err
 }
 
+func (f *fakeQuerier) GetTaskByIdempotencyKey(ctx context.Context, *string) (queries.Task, error) {
+	return f.row, f.err
+}
+
 func TestCreateTask_HappyPath(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	h := api.NewHandler(&fakeQuerier{row: queries.Task{

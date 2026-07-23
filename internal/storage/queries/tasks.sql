@@ -7,3 +7,8 @@ RETURNING id, idempotency_key, payload, status, created_at;
 SELECT id, idempotency_key, payload, status, created_at
 FROM tasks
 WHERE id = $1;
+
+-- name: GetTaskByIdempotencyKey :one
+SELECT id, idempotency_key, payload, status, created_at
+FROM tasks
+WHERE idempotency_key = $1;
