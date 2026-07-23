@@ -92,7 +92,13 @@ func (s *Error) SetMessage(val string) {
 	s.Message = val
 }
 
-func (*Error) getTaskRes() {}
+type GetTaskInternalServerError Error
+
+func (*GetTaskInternalServerError) getTaskRes() {}
+
+type GetTaskNotFound Error
+
+func (*GetTaskNotFound) getTaskRes() {}
 
 // NewOptCreateTaskRequestPayload returns new OptCreateTaskRequestPayload with value set to v.
 func NewOptCreateTaskRequestPayload(v CreateTaskRequestPayload) OptCreateTaskRequestPayload {

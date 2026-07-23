@@ -62,7 +62,10 @@ func (h *Handler) CreateTask(ctx context.Context, req *oas.CreateTaskRequest) (o
 	row, err := h.q.CreateTask(ctx, createTaskParams)
 	if err != nil {
 		h.log.ErrorContext(ctx, "create task failed", "err", err)
-		return nil, fmt.Errorf("insert task: %w", err)
+		return &oas.CreateTaskInternalServerError{
+			Code:    strconv.Itoa(http.StatusInternalServerError),
+			Message: "internal error",
+		}, nil
 	}
 
 	return &oas.Task{
@@ -79,7 +82,7 @@ func (h *Handler) GetTask(ctx context.Context, params oas.GetTaskParams) (oas.Ge
 	row, err := h.q.GetTaskByID(ctx, params.ID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return &oas.Error{
+			return &oas.GetTaskNotFound{
 				Code:    strconv.Itoa(http.StatusNotFound),
 				Message: "task ID not found",
 			}, nil
@@ -88,7 +91,10 @@ func (h *Handler) GetTask(ctx context.Context, params oas.GetTaskParams) (oas.Ge
 		// failure. Returning it — not a zero-value Task — is the whole point; it
 		// becomes a JSON 500 once getTask declares one.
 		h.log.ErrorContext(ctx, "get task failed", "err", err)
-		return nil, err
+		return &oas.GetTaskInternalServerError{
+			Code:    strconv.Itoa(http.StatusInternalServerError),
+			Message: "internal error",
+		}, nil
 	}
 
 	return &oas.Task{

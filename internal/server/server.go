@@ -19,7 +19,7 @@ import (
 )
 
 func Run(ctx context.Context, cfg *config.Config, h *api.Handler, reg *prometheus.Registry) error {
-	oasSrv, err := oas.NewServer(h)
+	oasSrv, err := oas.NewServer(h, oas.WithErrorHandler(api.ErrorHandler))
 	if err != nil {
 		return fmt.Errorf("new oas server: %w", err)
 	}

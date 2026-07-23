@@ -69,7 +69,7 @@ func TestGetTask_NotFound(t *testing.T) {
 	h := api.NewHandler(&fakeQuerier{err: pgx.ErrNoRows}, discardLogger())
 	resp, err := h.GetTask(context.Background(), oas.GetTaskParams{ID: uuid.Must(uuid.NewV7())})
 	require.NoError(t, err)
-	e, ok := resp.(*oas.Error)
+	e, ok := resp.(*oas.GetTaskInternalServerError)
 	require.True(t, ok)
 	assert.Equal(t, "404", e.Code)
 }
