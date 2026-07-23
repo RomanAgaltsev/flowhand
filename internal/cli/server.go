@@ -37,7 +37,9 @@ var serverCmd = &cobra.Command{
 		defer func() {
 			sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			_ = shutdown(sctx)
+			if err := shutdown(sctx); err != nil {
+				slog.Error("obs shutdown failed", "err", err)
+			}
 		}()
 
 		pool, err := storage.NewPool(ctx, cfg.DB)
@@ -50,7 +52,6 @@ var serverCmd = &cobra.Command{
 		h := api.NewHandler(q, slog.Default())
 
 		return server.Run(ctx, cfg, h, reg)
-
 	},
 }
 

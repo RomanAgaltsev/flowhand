@@ -10,6 +10,7 @@ import (
 	"github.com/RomanAgaltsev/flowhand/internal/config"
 )
 
+// NewPool opens an instrumented pgx connection pool from the DB config.
 func NewPool(ctx context.Context, cfg config.DB) (*pgxpool.Pool, error) {
 	pcfg, err := pgxpool.ParseConfig(cfg.DSN)
 	if err != nil {

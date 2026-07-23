@@ -31,6 +31,16 @@ linters:
         - name: range
         - name: errorf
 
+  exclusions:
+    rules:
+      # G116 (Trojan Source) is reported at file scope, so the inline nolint on
+      # the offending seed cannot reach it. The bidi control char is a
+      # deliberate adversarial fuzz seed.
+      - path: internal/api/validator_test.go
+        text: G116
+        linters:
+          - gosec
+
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0

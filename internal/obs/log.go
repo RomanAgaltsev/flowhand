@@ -41,11 +41,14 @@ func (h traceHandler) WithGroup(name string) slog.Handler {
 	return traceHandler{Handler: h.Handler.WithGroup(name)}
 }
 
+// Config configures a logger built by NewLoggerWithWriter.
 type Config struct {
 	Format string
 	Level  string
 }
 
+// NewLogger builds the process logger from observability config, stamping
+// trace/span IDs onto records emitted with the *Context methods.
 func NewLogger(cfg *config.Obs) *slog.Logger {
 	var handler slog.Handler
 
@@ -63,6 +66,7 @@ func NewLogger(cfg *config.Obs) *slog.Logger {
 	return logger
 }
 
+// NewLoggerWithWriter builds a logger that writes to buf, for use in tests.
 func NewLoggerWithWriter(cfg Config, buf *bytes.Buffer) *slog.Logger {
 	var handler slog.Handler
 

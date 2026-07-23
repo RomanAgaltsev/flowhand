@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -23,12 +22,14 @@ var rootCmd = &cobra.Command{
 var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "print flowhand version",
-	Run: func(_ *cobra.Command, _ []string) {
-		fmt.Fprintln(os.Stdout, version)
+	Run: func(cmd *cobra.Command, _ []string) {
+		cmd.Printf("flowhand %s (commit %s, built %s)\n", version, commit, date)
 	},
 }
 
 func init() {
+	rootCmd.SetOut(os.Stdout)
+
 	rootCmd.PersistentFlags().String("config", "", "path to config file")
 	rootCmd.PersistentFlags().String("log-level", "info", "log level (debug|info|warn|error)")
 
@@ -42,6 +43,7 @@ func init() {
 	)
 }
 
+// Execute runs the root command and returns any error from the selected subcommand.
 func Execute() error {
 	return rootCmd.Execute()
 }

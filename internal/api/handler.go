@@ -27,11 +27,13 @@ type Querier interface {
 	GetTaskByIdempotencyKey(ctx context.Context, idempotencyKey *string) (queries.Task, error)
 }
 
+// Handler implements the ogen-generated server interface, backed by a Querier.
 type Handler struct {
 	q   Querier
 	log *slog.Logger
 }
 
+// NewHandler returns a Handler that serves tasks from q and logs to log.
 func NewHandler(q Querier, log *slog.Logger) *Handler {
 	return &Handler{
 		q:   q,
@@ -39,6 +41,7 @@ func NewHandler(q Querier, log *slog.Logger) *Handler {
 	}
 }
 
+// CreateTask persists a new task, replaying the existing one on an idempotency-key conflict.
 func (h *Handler) CreateTask(ctx context.Context, req *oas.CreateTaskRequest) (oas.CreateTaskRes, error) {
 	ctx, span := tracer.Start(ctx, "createTask")
 	defer span.End()
@@ -68,10 +71,7 @@ func (h *Handler) CreateTask(ctx context.Context, req *oas.CreateTaskRequest) (o
 			return h.replay(ctx, createTaskParams.IdempotencyKey)
 		}
 		h.log.ErrorContext(ctx, "create task failed", "err", err)
-		return &oas.CreateTaskInternalServerError{
-			Code:    strconv.Itoa(http.StatusInternalServerError),
-			Message: "internal error",
-		}, nil
+		return nil, fmt.Errorf("insert task: %w", err)
 	}
 
 	return &oas.Task{
@@ -81,6 +81,7 @@ func (h *Handler) CreateTask(ctx context.Context, req *oas.CreateTaskRequest) (o
 	}, nil
 }
 
+// GetTask returns the task with the given ID, or a 404 when it does not exist.
 func (h *Handler) GetTask(ctx context.Context, params oas.GetTaskParams) (oas.GetTaskRes, error) {
 	ctx, span := tracer.Start(ctx, "getTask")
 	defer span.End()
@@ -94,13 +95,10 @@ func (h *Handler) GetTask(ctx context.Context, params oas.GetTaskParams) (oas.Ge
 			}, nil
 		}
 		// Any other error (conn dead, timeout, cancel, pool-exhausted) is a real
-		// failure. Returning it — not a zero-value Task — is the whole point; it
-		// becomes a JSON 500 once getTask declares one.
+		// failure. Returning it — not a typed 500 — lets ogen's ErrorHandler
+		// render the Error envelope and marks the request as failed for tracing.
 		h.log.ErrorContext(ctx, "get task failed", "err", err)
-		return &oas.GetTaskInternalServerError{
-			Code:    strconv.Itoa(http.StatusInternalServerError),
-			Message: "internal error",
-		}, nil
+		return nil, fmt.Errorf("get task %s: %w", params.ID, err)
 	}
 
 	return &oas.Task{
@@ -110,23 +108,21 @@ func (h *Handler) GetTask(ctx context.Context, params oas.GetTaskParams) (oas.Ge
 	}, nil
 }
 
+// replay serves the task already stored under a conflicting idempotency key. A
+// nil key or a failed lookup means the row we just collided with is unreadable,
+// so both surface as an error for the ErrorHandler to render as a 500.
 func (h *Handler) replay(ctx context.Context, key *string) (oas.CreateTaskRes, error) {
 	if key == nil {
-		return &oas.CreateTaskInternalServerError{
-			Code:    strconv.Itoa(http.StatusInternalServerError),
-			Message: "internal error",
-		}, nil
+		return nil, errors.New("idempotency conflict without a key")
 	}
-	row, err := h.q.GetTaskByIdempotencyKey(ctx, *key)
+	row, err := h.q.GetTaskByIdempotencyKey(ctx, key)
 	if err != nil {
-		return &oas.CreateTaskInternalServerError{
-			Code:    strconv.Itoa(http.StatusInternalServerError),
-			Message: "internal error",
-		}, nil
+		h.log.ErrorContext(ctx, "idempotency replay failed", "err", err)
+		return nil, fmt.Errorf("replay idempotent task: %w", err)
 	}
-	&oas.Task{
-		ID: row.ID,
-		Status: oas.TaskStatus(row.Status),
+	return &oas.Task{
+		ID:        row.ID,
+		Status:    oas.TaskStatus(row.Status),
 		CreatedAt: row.CreatedAt,
 	}, nil
 }

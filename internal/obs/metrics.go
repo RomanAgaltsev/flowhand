@@ -15,6 +15,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+// NewMeterProvider builds an OTel meter provider that exports through the given
+// Prometheus registerer and collects runtime metrics.
 func NewMeterProvider(cfg *config.Config, reg prometheus.Registerer) (*metric.MeterProvider, error) {
 	exporter, err := otelprom.New(otelprom.WithRegisterer(reg))
 	if err != nil {

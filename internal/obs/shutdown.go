@@ -13,6 +13,7 @@ import (
 	"github.com/RomanAgaltsev/flowhand/internal/config"
 )
 
+// ShutdownFunc releases the resources wired up by Init.
 type ShutdownFunc func(context.Context) error
 
 // Init wires up logging, tracing and metrics, and returns the registry that

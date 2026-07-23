@@ -32,5 +32,5 @@ func ErrorHandler(_ context.Context, w http.ResponseWriter, _ *http.Request, err
 	}
 	enc := new(jx.Encoder)
 	e.Encode(enc)
-	_, _ = enc.WriteTo(w)
+	_, _ = enc.WriteTo(w) //nolint:errcheck // best-effort write to an already-failing response
 }

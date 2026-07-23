@@ -30,7 +30,7 @@ func (f *fakeQuerier) GetTaskByID(ctx context.Context, id uuid.UUID) (queries.Ta
 	return f.row, f.err
 }
 
-func (f *fakeQuerier) GetTaskByIdempotencyKey(ctx context.Context, *string) (queries.Task, error) {
+func (f *fakeQuerier) GetTaskByIdempotencyKey(ctx context.Context, idempotencyKey *string) (queries.Task, error) {
 	return f.row, f.err
 }
 
@@ -73,7 +73,7 @@ func TestGetTask_NotFound(t *testing.T) {
 	h := api.NewHandler(&fakeQuerier{err: pgx.ErrNoRows}, discardLogger())
 	resp, err := h.GetTask(context.Background(), oas.GetTaskParams{ID: uuid.Must(uuid.NewV7())})
 	require.NoError(t, err)
-	e, ok := resp.(*oas.GetTaskInternalServerError)
+	e, ok := resp.(*oas.GetTaskNotFound)
 	require.True(t, ok)
 	assert.Equal(t, "404", e.Code)
 }

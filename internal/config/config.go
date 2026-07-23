@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/spf13/pflag"
 )
 
+// Config is the fully resolved application configuration.
 type Config struct {
 	Env     string `koanf:"env"` // dev, staging, prod
 	Version string `koanf:"version"`
@@ -22,11 +24,13 @@ type Config struct {
 	Obs     Obs    `koanf:"obs"`
 }
 
+// HTTP holds the HTTP server settings.
 type HTTP struct {
 	Addr            string        `koanf:"addr"`
 	ShutdownTimeout time.Duration `koanf:"shutdown_timeout"`
 }
 
+// DB holds the PostgreSQL connection-pool settings.
 type DB struct {
 	DSN             string        `koanf:"dsn"`
 	MaxConns        int32         `koanf:"max_conns"`
@@ -34,6 +38,7 @@ type DB struct {
 	MaxConnLifetime time.Duration `koanf:"max_conn_lifetime"`
 }
 
+// Obs holds the logging, tracing and metrics settings.
 type Obs struct {
 	LogLevel     string `koanf:"log_level"`
 	LogFormat    string `koanf:"log_format"`    // json or text
@@ -41,6 +46,8 @@ type Obs struct {
 	ServiceName  string `koanf:"service_name"`
 }
 
+// Load resolves configuration from defaults, an optional YAML file, environment
+// variables and flags, in ascending order of precedence.
 func Load(path string, flags *pflag.FlagSet) (*Config, error) {
 	k := koanf.New(".")
 
@@ -116,6 +123,15 @@ func Load(path string, flags *pflag.FlagSet) (*Config, error) {
 	}
 
 	// 5. Materialize.
+	maxConns := k.Int("db.max_conns")
+	if maxConns < 1 || maxConns > math.MaxInt32 {
+		return nil, fmt.Errorf("db.max_conns out of range: %d", maxConns)
+	}
+	minConns := k.Int("db.min_conns")
+	if minConns < 0 || minConns > math.MaxInt32 {
+		return nil, fmt.Errorf("db.min_conns out of range: %d", minConns)
+	}
+
 	return &Config{
 		Env:     k.String("env"),
 		Version: k.String("version"),
@@ -125,8 +141,8 @@ func Load(path string, flags *pflag.FlagSet) (*Config, error) {
 		},
 		DB: DB{
 			DSN:             k.String("db.dsn"),
-			MaxConns:        int32(k.Int("db.max_conns")),
-			MinConns:        int32(k.Int("db.min_conns")),
+			MaxConns:        int32(maxConns),
+			MinConns:        int32(minConns),
 			MaxConnLifetime: k.Duration("db.max_conn_lifetime"),
 		},
 		Obs: Obs{

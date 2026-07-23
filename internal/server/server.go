@@ -18,6 +18,8 @@ import (
 	"github.com/RomanAgaltsev/flowhand/internal/config"
 )
 
+// Run serves the API, metrics and pprof endpoints until ctx is cancelled, then
+// gracefully shuts the server down.
 func Run(ctx context.Context, cfg *config.Config, h *api.Handler, reg *prometheus.Registry) error {
 	oasSrv, err := oas.NewServer(h, oas.WithErrorHandler(api.ErrorHandler))
 	if err != nil {
@@ -58,8 +60,11 @@ func Run(ctx context.Context, cfg *config.Config, h *api.Handler, reg *prometheu
 	case err := <-errCh:
 		return err
 	case <-ctx.Done():
+		// A detached context on purpose: ctx is already cancelled here, and Shutdown
+		// needs a live deadline to drain in-flight requests.
 		sctx, cancel := context.WithTimeout(context.Background(), cfg.HTTP.ShutdownTimeout)
+
 		defer cancel()
-		return srv.Shutdown(sctx) //
+		return srv.Shutdown(sctx) //nolint:contextcheck // deliberate detached shutdown context
 	}
 }

@@ -27,7 +27,7 @@ func TestLoad_EnvOverridesDefault(t *testing.T) {
 
 func TestLoad_FileAndEnv_EnvWins(t *testing.T) {
 	tmp := t.TempDir() + "/cfg.yaml"
-	os.WriteFile(tmp, []byte("http:\n  addr: :7777\n"), 0600)
+	require.NoError(t, os.WriteFile(tmp, []byte("http:\n  addr: :7777\n"), 0o600))
 	t.Setenv("FLOWHAND_HTTP_ADDR", ":8888")
 	cfg, err := config.Load(tmp, nil)
 	require.NoError(t, err)
