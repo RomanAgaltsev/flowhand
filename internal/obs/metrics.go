@@ -47,14 +47,10 @@ func NewMeterProvider(cfg *config.Config, reg prometheus.Registerer) (*metric.Me
 	}
 
 	view := metric.NewView(
-		metric.Instrument{
-			Name: "latency",
-		},
-		metric.Stream{
-			Aggregation: metric.AggregationExplicitBucketHistogram{
-				Boundaries: []float64{5, 10, 20, 30, 40, 50, 75, 100, 250, 500, 1000},
-			},
-		},
+		metric.Instrument{Name: "*.duration"},
+		metric.Stream{Aggregation: metric.AggregationExplicitBucketHistogram{
+			Boundaries: []float64{5, 10, 20, 30, 40, 50, 75, 100, 250, 500, 1000}, // ms, for a p99<50ms SLO
+		}},
 	)
 
 	meterProvider := metric.NewMeterProvider(
