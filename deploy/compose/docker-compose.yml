@@ -174,7 +174,7 @@ services:
 
   pyroscope:
     image: grafana/pyroscope:latest
-    command: ["server", "-config.file=/etc/pyroscope/config.yml"]
+    command: ["server", "-config.file=/etc/pyroscope/config.yaml"]
     volumes:
       - ./pyroscope/config.yml:/etc/pyroscope/config.yaml:ro
     ports: ["4040:4040"]
