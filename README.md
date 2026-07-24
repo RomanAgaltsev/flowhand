@@ -1,6 +1,6 @@
 # flowhand
 
-![ci](https://github.com/<you>/flowhand/actions/workflows/ci.yml/badge.svg)
+[![CI](https://github.com/RomanAgaltsev/flowhand/actions/workflows/ci.yml/badge.svg)](https://github.com/RomanAgaltsev/flowhand/actions/workflows/ci.yml)
 
 **Distributed task & workflow orchestration service in Go** — built as a single,
 self-contained service that fuses a task queue (priorities, retries, cron,
