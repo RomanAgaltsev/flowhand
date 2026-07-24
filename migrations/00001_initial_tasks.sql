@@ -14,4 +14,7 @@ CREATE UNIQUE INDEX tasks_idempotency_key_uniq
     WHERE idempotency_key IS NOT NULL;
 
 -- +goose Down
+-- pg_stat_statements is cluster-scoped and shared across databases; the Up's
+-- CREATE EXTENSION IF NOT EXISTS is intentionally not reversed here. It also
+-- requires superuser — see the Phase 4 deployment note.
 DROP TABLE tasks;
