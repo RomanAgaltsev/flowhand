@@ -11,6 +11,7 @@ vars:
   OGEN_VERSION: 'v1.23.0'
   GOOSE_VERSION: 'v3.27.2'
   SQLC_VERSION: 'v1.31.1'
+  GOVULNCHECK_VERSION: 'v1.1.4'
 
   BIN_DIR: '{{.ROOT_DIR | replace "\\" "/"}}/bin'
   EXE_EXT: '{{if eq OS "windows"}}.exe{{end}}'
@@ -23,6 +24,7 @@ vars:
   OGEN: '{{.BIN_DIR}}/ogen{{.EXE_EXT}}'
   GOOSE: '{{.BIN_DIR}}/goose{{.EXE_EXT}}'
   SQLC: '{{.BIN_DIR}}/sqlc{{.EXE_EXT}}'
+  GOVULNCHECK: '{{.BIN_DIR}}/govulncheck{{.EXE_EXT}}'
 
 
   MODULE: github.com/RomanAgaltsev/flowhand
@@ -48,6 +50,10 @@ tasks:
       - GOBIN={{.BIN_DIR}} go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@{{.GOLANGCI_LINT_VERSION}}
     status:
       - ls {{.GOLANGCI_LINT}} >/dev/null 2>&1
+
+  govulncheck:install:
+    cmds: ['GOBIN={{.BIN_DIR}} go install golang.org/x/vuln/cmd/govulncheck@{{.GOVULNCHECK_VERSION}}']
+    status: ['ls {{.GOVULNCHECK}} >/dev/null 2>&1']
 
   buf:install:
     desc: install buf
@@ -138,6 +144,7 @@ tasks:
 
   sqlc:gen:
     desc: generate code with sqlc
+    deps: [sqlc:install]
     cmds:
       - '{{.SQLC}} generate'
 
@@ -149,12 +156,10 @@ tasks:
       - task: sqlc:gen
 
   deps:update:
-    desc: update dependencies
+    desc: update and tidy dependencies
     cmds:
-      - echo '🔄 Синхронизируем go.work...'
-      - go work sync
-      - echo '🔄 Обновляем зависимости в модулях...'
-      - for mod in {{.MODULES}}; do (cd "$mod" && go mod tidy -compat={{.GO_VERSION}}); done
+          - go get -u ./...
+          - go mod tidy -compat={{.GO_VERSION}}
 
   default:
     desc: list tasks
@@ -215,9 +220,8 @@ tasks:
           fi
 
   vuln:
-    desc: run govulncheck
-    cmds:
-      - govulncheck ./...
+    deps: [govulncheck:install]
+    cmds: ['{{.GOVULNCHECK}} ./...']
 
   up:
     desc: bring up dev stack
@@ -242,8 +246,9 @@ tasks:
 
   migrate:up:
     desc: apply all migrations
+    deps: [goose:install]
     cmds:
-      - goose -dir migrations postgres "$FLOWHAND_DB_DSN" up
+      - '{{.GOOSE}} -dir migrations postgres "$FLOWHAND_DB_DSN" up'
 
   migrate:down:
     desc: roll back one migration
