@@ -115,14 +115,6 @@ tasks:
     cmds:
       - '{{.GOLANGCI_LINT}} run --allow-parallel-runners ./... --config=.golangci.yml'
 
-  proto:lint:
-    desc: check .proto-files with linter
-    deps: [buf:install, proto:install-plugins]
-    dir: shared/proto
-    cmds:
-      - echo 'checking .proto-files...'
-      - '{{.BUF}} lint'
-
   proto:gen:
     desc: regenerate protobuf
     deps: [buf:install, proto:install-plugins]
@@ -158,8 +150,8 @@ tasks:
   deps:update:
     desc: update and tidy dependencies
     cmds:
-          - go get -u ./...
-          - go mod tidy -compat={{.GO_VERSION}}
+      - go get -u ./...
+      - go mod tidy -compat={{.GO_VERSION}}
 
   default:
     desc: list tasks
@@ -252,8 +244,9 @@ tasks:
 
   migrate:down:
     desc: roll back one migration
+    deps: [goose:install]
     cmds:
-      - goose -dir migrations postgres "$FLOWHAND_DB_DSN" down
+      - '{{.GOOSE}} -dir migrations postgres "$FLOWHAND_DB_DSN" down'
 
   demo:
     desc: launch the reference producer into a running stack

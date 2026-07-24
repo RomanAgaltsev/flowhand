@@ -74,6 +74,21 @@ extracts the trace ID with the regex `trace_id=(\w+)`, which matches slog's
 text output. The `json` default emits `"trace_id":"..."` and the trace ↔ logs
 correlation in step 7 will not link.
 
+### Configuring by file instead of environment
+
+Every setting above can also come from a YAML file. `configs/cfg.yaml` is a
+worked example holding the two values you are most likely to change:
+
+```bash
+./bin/flowhand server --config configs/cfg.yaml
+```
+
+Settings are resolved in four layers, each overriding the one before it:
+built-in defaults → config file → `FLOWHAND_*` environment → command-line
+flags. So the file is a convenient baseline, and an env var or a flag still
+wins over it — which is why `FLOWHAND_DB_DSN` in your shell beats the DSN
+committed in the file, and `--log-level=debug` beats both.
+
 ## 4. Create a task
 
 In terminal B:

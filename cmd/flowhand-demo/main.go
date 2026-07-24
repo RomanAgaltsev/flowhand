@@ -29,7 +29,7 @@ var submits = promauto.NewCounterVec(
 		Name: "flowhand_demo_submits_total",
 		Help: "Task submissions attempted by the reference producer.",
 	},
-	[]string{"result"}, // ok | error
+	[]string{"result"}, // created | replayed | error
 )
 
 func main() {
@@ -70,7 +70,18 @@ func run() error {
 	tick := time.NewTicker(interval)
 	defer tick.Stop()
 
-	slog.Info("submitting", "endpoint", endpoint, "interval", interval)
+	// Each idempotency key is submitted twice: the first submit creates a task,
+	// the second must replay it and come back with the same task ID. Scoping
+	// the keys to this process run keeps repeated `task demo` invocations from
+	// colliding with rows left by earlier ones.
+	runID := uuid.NewString()
+
+	slog.Info("submitting", "endpoint", endpoint, "interval", interval, "run_id", runID)
+
+	var (
+		n      int
+		lastID string
+	)
 
 loop:
 	for {
@@ -78,12 +89,32 @@ loop:
 		case <-ctx.Done():
 			break loop
 		case <-tick.C:
-			if err := submitOne(ctx, client, endpoint); err != nil {
+			key := fmt.Sprintf("%s-%d", runID, n/2)
+			firstOfPair := n%2 == 0
+			n++
+
+			id, err := submitOne(ctx, client, endpoint, key)
+			if err != nil {
 				submits.WithLabelValues("error").Inc()
 				slog.Warn("submit failed", "err", err)
 				continue
 			}
-			submits.WithLabelValues("ok").Inc()
+
+			// The server replayed if it answered the repeat submit with the
+			// task ID it minted the first time. Observed from the response,
+			// not assumed from the send order - that is what makes this a
+			// check of the server rather than of this loop.
+			if !firstOfPair && id == lastID {
+				submits.WithLabelValues("replayed").Inc()
+				slog.Info("replayed", "id", id, "idempotency_key", key)
+				continue
+			}
+			if !firstOfPair {
+				slog.Warn("repeat submit was not replayed",
+					"idempotency_key", key, "first_id", lastID, "second_id", id)
+			}
+			submits.WithLabelValues("created").Inc()
+			lastID = id
 		}
 	}
 
@@ -124,25 +155,28 @@ type createTaskRequest struct {
 	IdempotencyKey string         `json:"idempotency_key,omitempty"`
 }
 
-func submitOne(ctx context.Context, client *http.Client, endpoint string) error {
+// submitOne posts one task under the given idempotency key and returns the task
+// ID the server answered with - the same ID on a replay as on the original
+// create, which is how the caller tells the two apart.
+func submitOne(ctx context.Context, client *http.Client, endpoint, idempotencyKey string) (string, error) {
 	body, err := json.Marshal(createTaskRequest{
 		Handler:        "echo",
 		Payload:        map[string]any{"msg": "hello", "n": 42},
-		IdempotencyKey: uuid.NewString(),
+		IdempotencyKey: idempotencyKey,
 	})
 	if err != nil {
-		return fmt.Errorf("marshal request: %w", err)
+		return "", fmt.Errorf("marshal request: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("new request: %w", err)
+		return "", fmt.Errorf("new request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("post task: %w", err)
+		return "", fmt.Errorf("post task: %w", err)
 	}
 	defer func() {
 		// Drain before close so the connection returns to the idle pool.
@@ -155,7 +189,14 @@ func submitOne(ctx context.Context, client *http.Client, endpoint string) error 
 	}()
 
 	if resp.StatusCode != http.StatusCreated {
-		return fmt.Errorf("unexpected status %s", resp.Status)
+		return "", fmt.Errorf("unexpected status %s", resp.Status)
 	}
-	return nil
+
+	var task struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&task); err != nil {
+		return "", fmt.Errorf("decode task: %w", err)
+	}
+	return task.ID, nil
 }
