@@ -29,6 +29,8 @@ var versionCmd = &cobra.Command{
 
 func init() {
 	rootCmd.SetOut(os.Stdout)
+	rootCmd.SilenceUsage = true
+	rootCmd.SilenceErrors = true
 
 	rootCmd.PersistentFlags().String("config", "", "path to config file")
 	rootCmd.PersistentFlags().String("log-level", "info", "log level (debug|info|warn|error)")
