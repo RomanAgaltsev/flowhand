@@ -1,16 +1,11 @@
 package cli
 
 import (
-	"os"
-
 	"github.com/spf13/cobra"
 )
 
 var relayCmd = &cobra.Command{
 	Use:   "relay",
-	Short: "not implemented",
-	Run: func(cmd *cobra.Command, _ []string) {
-		cmd.Println("not implemented")
-		os.Exit(1)
-	},
+	Short: "not implemented (Phase 1+)",
+	RunE:  func(_ *cobra.Command, _ []string) error { return errNotImplemented },
 }
