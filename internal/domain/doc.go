@@ -1,0 +1,2 @@
+// Package domain
+package domain
