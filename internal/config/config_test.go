@@ -12,7 +12,7 @@ import (
 )
 
 func TestLoad_DefaultsOnly(t *testing.T) {
-	cfg, err := config.Load("cfg.yaml", nil)
+	cfg, err := config.Load("", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "dev", cfg.Env)
 	assert.Equal(t, ":8080", cfg.HTTP.Addr)
