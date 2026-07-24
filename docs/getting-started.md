@@ -5,7 +5,7 @@ through Tempo and Loki. Takes about five minutes from a clean clone.
 
 ## Prerequisites
 
-- Go 1.25+
+- Go 1.26+
 - Docker with Compose
 - [Task](https://taskfile.dev) — `task setup` installs the rest (goose, ogen,
   sqlc, buf, golangci-lint)
