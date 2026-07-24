@@ -60,11 +60,11 @@ func Run(ctx context.Context, cfg *config.Config, h *api.Handler, reg *prometheu
 	case err := <-errCh:
 		return err
 	case <-ctx.Done():
-		// A detached context on purpose: ctx is already cancelled here, and Shutdown
-		// needs a live deadline to drain in-flight requests.
-		sctx, cancel := context.WithTimeout(context.Background(), cfg.HTTP.ShutdownTimeout)
-
+		sctx, cancel := context.WithTimeout(context.Background(), cfg.HTTP.ShutdownTimeout) //nolint:contextcheck // deliberate detached shutdown context (see M1)
 		defer cancel()
-		return srv.Shutdown(sctx) //nolint:contextcheck // deliberate detached shutdown context
+		if err := srv.Shutdown(sctx); err != nil { //nolint:contextcheck // deliberate detached shutdown context
+			return err
+		}
+		return <-errCh // ListenAndServe has already returned (ErrServerClosed → nil); no goroutine left live
 	}
 }
