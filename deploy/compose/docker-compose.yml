@@ -122,7 +122,6 @@ services:
 
   prometheus:
     image: prom/prometheus:v3.12.0
-    container_name: prometheus
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -151,7 +150,6 @@ services:
 
   loki:
     image: grafana/loki:3.4.2
-    container_name: loki
     command: ["-config.file=/etc/loki/loki.yaml"]
     volumes:
       - ./loki/loki.yml:/etc/loki/loki.yaml
@@ -162,7 +160,6 @@ services:
 
   promtail:
     image: grafana/promtail:3.6.11
-    container_name: promtail
     command: ["-config.file=/etc/promtail/promtail.yaml"]
     volumes:
       - ./promtail/promtail.yml:/etc/promtail/promtail.yaml
