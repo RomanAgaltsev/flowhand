@@ -63,6 +63,7 @@ func (h *Handler) CreateTask(ctx context.Context, req *oas.CreateTaskRequest) (o
 		ID:             id,
 		IdempotencyKey: optionalString(req.IdempotencyKey),
 		Payload:        payloadJSON,
+		Handler:        req.Handler,
 	}
 	row, err := h.q.CreateTask(ctx, createTaskParams)
 	if err != nil {

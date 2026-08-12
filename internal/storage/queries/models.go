@@ -16,4 +16,5 @@ type Task struct {
 	Payload        []byte    `json:"payload"`
 	Status         string    `json:"status"`
 	CreatedAt      time.Time `json:"created_at"`
+	Handler        string    `json:"handler"`
 }

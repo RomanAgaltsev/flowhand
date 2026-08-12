@@ -12,19 +12,25 @@ import (
 )
 
 const createTask = `-- name: CreateTask :one
-INSERT INTO tasks (id, idempotency_key, payload)
-VALUES ($1, $2, $3)
-RETURNING id, idempotency_key, payload, status, created_at
+INSERT INTO tasks (id, idempotency_key, payload, handler)
+VALUES ($1, $2, $3, $4)
+RETURNING id, idempotency_key, payload, status, created_at, handler
 `
 
 type CreateTaskParams struct {
 	ID             uuid.UUID `json:"id"`
 	IdempotencyKey *string   `json:"idempotency_key"`
 	Payload        []byte    `json:"payload"`
+	Handler        string    `json:"handler"`
 }
 
 func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error) {
-	row := q.db.QueryRow(ctx, createTask, arg.ID, arg.IdempotencyKey, arg.Payload)
+	row := q.db.QueryRow(ctx, createTask,
+		arg.ID,
+		arg.IdempotencyKey,
+		arg.Payload,
+		arg.Handler,
+	)
 	var i Task
 	err := row.Scan(
 		&i.ID,
@@ -32,12 +38,13 @@ func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, e
 		&i.Payload,
 		&i.Status,
 		&i.CreatedAt,
+		&i.Handler,
 	)
 	return i, err
 }
 
 const getTaskByID = `-- name: GetTaskByID :one
-SELECT id, idempotency_key, payload, status, created_at
+SELECT id, idempotency_key, payload, status, created_at, handler
 FROM tasks
 WHERE id = $1
 `
@@ -51,12 +58,13 @@ func (q *Queries) GetTaskByID(ctx context.Context, id uuid.UUID) (Task, error) {
 		&i.Payload,
 		&i.Status,
 		&i.CreatedAt,
+		&i.Handler,
 	)
 	return i, err
 }
 
 const getTaskByIdempotencyKey = `-- name: GetTaskByIdempotencyKey :one
-SELECT id, idempotency_key, payload, status, created_at
+SELECT id, idempotency_key, payload, status, created_at, handler
 FROM tasks
 WHERE idempotency_key = $1
 `
@@ -70,6 +78,7 @@ func (q *Queries) GetTaskByIdempotencyKey(ctx context.Context, idempotencyKey *s
 		&i.Payload,
 		&i.Status,
 		&i.CreatedAt,
+		&i.Handler,
 	)
 	return i, err
 }
