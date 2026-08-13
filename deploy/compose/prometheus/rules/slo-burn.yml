@@ -1,0 +1,12 @@
+groups:
+  - name: slo-burn-example
+    interval: 30s
+    rules:
+      - alert: ExampleHighErrorRate
+        expr: rate(http_requests_total{job="flowhand",status=~"5.."}[5m]) > 0.05
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Example: 5xx rate > 5% over 5 minutes"
+          description: "Placeholder rule wired in Phase 0 to prove the pipeline. Replace in Phase 4 with real SLO burn rules."

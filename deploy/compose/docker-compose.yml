@@ -127,6 +127,8 @@ services:
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
       - ./prometheus/prometheus_data:/prometheus
+      - ./prometheus/rules:/etc/prometheus/rules:ro
+
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--web.external-url=/prometheus"
@@ -201,3 +203,18 @@ services:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
     networks: [flowhand]
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: flowhand-alertmanager
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    ports:
+      - "9093:9093"
+    networks:
+      - flowhand
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:9093/-/healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 5

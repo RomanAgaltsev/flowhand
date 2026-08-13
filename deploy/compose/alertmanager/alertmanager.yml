@@ -1,0 +1,12 @@
+route:
+  receiver: dev-sink
+  group_by: ['alertname', 'severity']
+  group_wait: 10s
+  group_interval: 30s
+  repeat_interval: 1h
+
+receivers:
+  - name: dev-sink
+    webhook_configs:
+      - url: 'http://host.docker.internal:9999/dev-sink'  # noop in dev; replace per env
+        send_resolved: true
