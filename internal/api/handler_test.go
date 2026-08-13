@@ -2,97 +2,57 @@ package api_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"testing"
 	"time"
 
-	"github.com/RomanAgaltsev/flowhand/internal/api"
-	"github.com/RomanAgaltsev/flowhand/internal/api/oas"
-	"github.com/RomanAgaltsev/flowhand/internal/storage/queries"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/RomanAgaltsev/flowhand/internal/api"
+	"github.com/RomanAgaltsev/flowhand/internal/api/oas"
+	domaintasks "github.com/RomanAgaltsev/flowhand/internal/domain/tasks"
+	"github.com/RomanAgaltsev/flowhand/internal/service/task"
 )
 
-// fakeQuerier answers with row/err by default. A test that needs one method to
-// behave differently from another - the idempotency replay path calls
-// CreateTask then GetTaskByIdempotencyKey - overrides just that method's func
-// field.
+// fakeCommander records the command it received so a test can assert the
+// handler translates the request faithfully - and decides nothing else.
+type fakeCommander struct {
+	task domaintasks.Task
+	err  error
+	got  task.SubmitCommand
+}
+
+func (f *fakeCommander) Submit(_ context.Context, cmd task.SubmitCommand) (domaintasks.Task, error) {
+	f.got = cmd
+	return f.task, f.err
+}
+
 type fakeQuerier struct {
-	row queries.Task
-	err error
-
-	createFn   func(context.Context, queries.CreateTaskParams) (queries.Task, error)
-	getByIDFn  func(context.Context, uuid.UUID) (queries.Task, error)
-	getByKeyFn func(context.Context, *string) (queries.Task, error)
+	view task.TaskView
+	err  error
 }
 
-func (f *fakeQuerier) CreateTask(ctx context.Context, arg queries.CreateTaskParams) (queries.Task, error) {
-	if f.createFn != nil {
-		return f.createFn(ctx, arg)
-	}
-	return f.row, f.err
+func (f *fakeQuerier) Get(_ context.Context, _ uuid.UUID) (task.TaskView, error) {
+	return f.view, f.err
 }
 
-func (f *fakeQuerier) GetTaskByID(ctx context.Context, id uuid.UUID) (queries.Task, error) {
-	if f.getByIDFn != nil {
-		return f.getByIDFn(ctx, id)
-	}
-	return f.row, f.err
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
-
-func (f *fakeQuerier) GetTaskByIdempotencyKey(ctx context.Context, idempotencyKey *string) (queries.Task, error) {
-	if f.getByKeyFn != nil {
-		return f.getByKeyFn(ctx, idempotencyKey)
-	}
-	return f.row, f.err
-}
-
-// uniqueViolation is the error Postgres returns when the partial unique index
-// tasks_idempotency_key_uniq rejects a duplicate key. Only Code is read by the
-// handler, but it must be a *pgconn.PgError for errors.As to match.
-func uniqueViolation() error { return &pgconn.PgError{Code: "23505"} }
 
 func TestCreateTask_HappyPath(t *testing.T) {
-	now := time.Now().UTC().Truncate(time.Second)
-	h := api.NewHandler(&fakeQuerier{row: queries.Task{
-		ID: uuid.Must(uuid.NewV7()), Status: "pending", CreatedAt: now,
-	}}, discardLogger())
-
-	resp, err := h.CreateTask(context.Background(), &oas.CreateTaskRequest{Handler: "echo"})
-	require.NoError(t, err)
-	task, ok := resp.(*oas.Task) // narrow the union to the 200 case
-	require.True(t, ok)
-	assert.Equal(t, "pending", string(task.Status))
-}
-
-func TestCreateTask_DBError(t *testing.T) {
-	h := api.NewHandler(&fakeQuerier{err: errors.New("boom")}, discardLogger())
-	_, err := h.CreateTask(context.Background(), &oas.CreateTaskRequest{Handler: "echo"})
-	require.ErrorContains(t, err, "insert task")
-}
-
-func TestCreateTask_ReplaysOnIdempotencyConflict(t *testing.T) {
-	stored := queries.Task{
-		ID:        uuid.Must(uuid.NewV7()),
-		Status:    "running",
-		CreatedAt: time.Now().UTC().Truncate(time.Second),
+	id := uuid.Must(uuid.NewV7())
+	created := time.Now().UTC().Truncate(time.Microsecond)
+	cmd := &fakeCommander{
+		task: domaintasks.FromPersistence(id, domaintasks.StatusPending, "echo",
+			json.RawMessage(`{}`), created),
 	}
-
-	var gotKey *string
-	h := api.NewHandler(&fakeQuerier{
-		createFn: func(context.Context, queries.CreateTaskParams) (queries.Task, error) {
-			return queries.Task{}, uniqueViolation()
-		},
-		getByKeyFn: func(_ context.Context, key *string) (queries.Task, error) {
-			gotKey = key
-			return stored, nil
-		},
-	}, discardLogger())
+	h := api.NewHandler(cmd, &fakeQuerier{}, discardLogger())
 
 	resp, err := h.CreateTask(context.Background(), &oas.CreateTaskRequest{
 		Handler:        "echo",
@@ -100,103 +60,120 @@ func TestCreateTask_ReplaysOnIdempotencyConflict(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	task, ok := resp.(*oas.Task)
+	got, ok := resp.(*oas.Task) // narrow the union to the 201 case
 	require.True(t, ok)
-	// The stored task is returned, not the freshly minted one - that is what
-	// makes the second submit a replay rather than a new task.
-	assert.Equal(t, stored.ID, task.ID)
-	assert.Equal(t, "running", string(task.Status))
-	require.NotNil(t, gotKey)
-	assert.Equal(t, "key-1", *gotKey)
+	assert.Equal(t, id, got.ID)
+	assert.Equal(t, oas.TaskStatusPending, got.Status)
+	assert.True(t, created.Equal(got.CreatedAt))
+
+	// The command carries what the request supplied - the handler translates,
+	// it does not decide.
+	assert.Equal(t, "echo", cmd.got.Handler)
+	assert.Equal(t, "key-1", cmd.got.IdempotencyKey)
+	assert.JSONEq(t, `{}`, string(cmd.got.Payload))
 }
 
-func TestCreateTask_ReplayLookupFails(t *testing.T) {
-	h := api.NewHandler(&fakeQuerier{
-		createFn: func(context.Context, queries.CreateTaskParams) (queries.Task, error) {
-			return queries.Task{}, uniqueViolation()
-		},
-		getByKeyFn: func(context.Context, *string) (queries.Task, error) {
-			return queries.Task{}, errors.New("connection refused")
-		},
-	}, discardLogger())
+func TestCreateTask_AbsentKeyBecomesEmptyString(t *testing.T) {
+	cmd := &fakeCommander{
+		task: domaintasks.FromPersistence(uuid.Must(uuid.NewV7()), domaintasks.StatusPending,
+			"echo", json.RawMessage(`{}`), time.Now().UTC()),
+	}
+	h := api.NewHandler(cmd, &fakeQuerier{}, discardLogger())
 
-	resp, err := h.CreateTask(context.Background(), &oas.CreateTaskRequest{
-		Handler:        "echo",
-		IdempotencyKey: oas.NewOptString("key-1"),
-	})
-	// An unreadable row must surface as an error (rendered as a 500 by
-	// api.ErrorHandler), never as a zero-value Task.
-	require.ErrorContains(t, err, "replay idempotent task")
-	assert.Nil(t, resp)
-}
-
-func TestCreateTask_ConflictWithoutKey(t *testing.T) {
-	h := api.NewHandler(&fakeQuerier{
-		createFn: func(context.Context, queries.CreateTaskParams) (queries.Task, error) {
-			return queries.Task{}, uniqueViolation()
-		},
-		getByKeyFn: func(context.Context, *string) (queries.Task, error) {
-			t.Fatal("must not look up a replay without an idempotency key")
-			return queries.Task{}, nil
-		},
-	}, discardLogger())
-
-	// No idempotency_key means the 23505 came from the UUIDv7 primary key, not
-	// from tasks_idempotency_key_uniq - a genuine 500, not something to replay.
 	_, err := h.CreateTask(context.Background(), &oas.CreateTaskRequest{Handler: "echo"})
-	require.ErrorContains(t, err, "idempotency conflict without a key")
+	require.NoError(t, err)
+
+	// "" is the service's contract for "no key"; turning it into a NULL column
+	// is the Commander's job, not the handler's.
+	assert.Empty(t, cmd.got.IdempotencyKey)
 }
 
-func TestCreateTask_NonUniqueViolationIsNotReplayed(t *testing.T) {
-	h := api.NewHandler(&fakeQuerier{
-		createFn: func(context.Context, queries.CreateTaskParams) (queries.Task, error) {
-			return queries.Task{}, &pgconn.PgError{Code: "23503"} // foreign_key_violation
-		},
-		getByKeyFn: func(context.Context, *string) (queries.Task, error) {
-			t.Fatal("only 23505 is a replay; every other SQLSTATE is a plain failure")
-			return queries.Task{}, nil
-		},
-	}, discardLogger())
+func TestCreateTask_MarshalsPayload(t *testing.T) {
+	cmd := &fakeCommander{
+		task: domaintasks.FromPersistence(uuid.Must(uuid.NewV7()), domaintasks.StatusPending,
+			"echo", json.RawMessage(`{}`), time.Now().UTC()),
+	}
+	h := api.NewHandler(cmd, &fakeQuerier{}, discardLogger())
 
-	_, err := h.CreateTask(context.Background(), &oas.CreateTaskRequest{
-		Handler:        "echo",
-		IdempotencyKey: oas.NewOptString("key-1"),
-	})
-	require.ErrorContains(t, err, "insert task")
+	req := &oas.CreateTaskRequest{Handler: "echo"}
+	req.SetPayload(oas.NewOptCreateTaskRequestPayload(
+		oas.CreateTaskRequestPayload{"a": []byte(`1`)},
+	))
+
+	_, err := h.CreateTask(context.Background(), req)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"a":1}`, string(cmd.got.Payload))
+}
+
+func TestCreateTask_UnmappedStatusIs500(t *testing.T) {
+	h := api.NewHandler(&fakeCommander{
+		task: domaintasks.FromPersistence(uuid.Must(uuid.NewV7()), domaintasks.Status("quarantined"),
+			"echo", json.RawMessage(`{}`), time.Now().UTC()),
+	}, &fakeQuerier{}, discardLogger())
+
+	_, err := h.CreateTask(context.Background(), &oas.CreateTaskRequest{Handler: "echo"})
+	require.ErrorContains(t, err, "quarantined")
 }
 
 func TestGetTask_HappyPath(t *testing.T) {
 	id := uuid.Must(uuid.NewV7())
-
-	now := time.Now().UTC().Truncate(time.Second)
-	h := api.NewHandler(&fakeQuerier{row: queries.Task{
-		ID: id, Status: "pending", CreatedAt: now,
+	created := time.Now().UTC().Truncate(time.Microsecond)
+	h := api.NewHandler(&fakeCommander{}, &fakeQuerier{view: task.TaskView{
+		ID: id, Status: "pending", Handler: "echo", CreatedAt: created,
 	}}, discardLogger())
 
 	resp, err := h.GetTask(context.Background(), oas.GetTaskParams{ID: id})
 	require.NoError(t, err)
-	task, ok := resp.(*oas.Task)
+
+	got, ok := resp.(*oas.Task)
 	require.True(t, ok)
-	assert.Equal(t, id, task.ID)
-	assert.Equal(t, "pending", string(task.Status))
+	assert.Equal(t, id, got.ID)
+	assert.Equal(t, oas.TaskStatusPending, got.Status)
+	assert.True(t, created.Equal(got.CreatedAt))
+}
+
+func TestGetTask_TranslatesDomainVocabulary(t *testing.T) {
+	// The domain says "complete"; the published spec says "succeeded". If this
+	// ever passes through untranslated, we are serving a contract violation.
+	h := api.NewHandler(&fakeCommander{}, &fakeQuerier{view: task.TaskView{
+		ID: uuid.Must(uuid.NewV7()), Status: "complete", CreatedAt: time.Now().UTC(),
+	}}, discardLogger())
+
+	resp, err := h.GetTask(context.Background(), oas.GetTaskParams{ID: uuid.Must(uuid.NewV7())})
+	require.NoError(t, err)
+
+	got, ok := resp.(*oas.Task)
+	require.True(t, ok)
+	assert.Equal(t, oas.TaskStatusSucceeded, got.Status)
+	require.NoError(t, got.Validate())
 }
 
 func TestGetTask_NotFound(t *testing.T) {
-	h := api.NewHandler(&fakeQuerier{err: pgx.ErrNoRows}, discardLogger())
+	h := api.NewHandler(&fakeCommander{}, &fakeQuerier{err: domaintasks.ErrNotFound}, discardLogger())
+
 	resp, err := h.GetTask(context.Background(), oas.GetTaskParams{ID: uuid.Must(uuid.NewV7())})
 	require.NoError(t, err)
+
 	e, ok := resp.(*oas.GetTaskNotFound)
 	require.True(t, ok)
 	assert.Equal(t, "404", e.Code)
 }
 
-func TestGetTask_DBError(t *testing.T) {
-	h := api.NewHandler(&fakeQuerier{err: errors.New("connection refused")}, discardLogger())
-	_, err := h.GetTask(context.Background(), oas.GetTaskParams{ID: uuid.Must(uuid.NewV7())})
-	require.Error(t, err)
-	assert.NotErrorIs(t, err, pgx.ErrNoRows) // proves it took the non-404 branch
+func TestCreateTask_ServiceError(t *testing.T) {
+	h := api.NewHandler(&fakeCommander{err: errors.New("boom")}, &fakeQuerier{}, discardLogger())
+
+	resp, err := h.CreateTask(context.Background(), &oas.CreateTaskRequest{Handler: "echo"})
+	// Returning the error - not a typed 500 - lets api.ErrorHandler render the
+	// Error envelope and marks the span as failed.
+	require.ErrorContains(t, err, "submit task")
+	assert.Nil(t, resp)
 }
 
-func discardLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
+func TestGetTask_UnmappedStatusIs500(t *testing.T) {
+	h := api.NewHandler(&fakeCommander{}, &fakeQuerier{view: task.TaskView{
+		ID: uuid.Must(uuid.NewV7()), Status: "quarantined",
+	}}, discardLogger())
+
+	_, err := h.GetTask(context.Background(), oas.GetTaskParams{ID: uuid.Must(uuid.NewV7())})
+	require.ErrorContains(t, err, "quarantined")
 }

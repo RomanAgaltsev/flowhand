@@ -24,7 +24,11 @@ import (
 // because api.ErrorHandler is installed. Dropping WithErrorHandler in
 // internal/server would silently revert every case below to text/plain.
 func TestErrorEnvelopes_OnTheWire(t *testing.T) {
-	h := api.NewHandler(&fakeQuerier{err: errors.New("db down")}, discardLogger())
+	h := api.NewHandler(
+		&fakeCommander{err: errors.New("db down")},
+		&fakeQuerier{err: errors.New("db down")},
+		discardLogger(),
+	)
 	oasSrv, err := oas.NewServer(h, oas.WithErrorHandler(api.ErrorHandler))
 	require.NoError(t, err)
 

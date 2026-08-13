@@ -9,13 +9,17 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/RomanAgaltsev/flowhand/internal/api"
 	"github.com/RomanAgaltsev/flowhand/internal/config"
 	"github.com/RomanAgaltsev/flowhand/internal/obs"
+	"github.com/RomanAgaltsev/flowhand/internal/repository/outbox"
+	repotasks "github.com/RomanAgaltsev/flowhand/internal/repository/tasks"
 	"github.com/RomanAgaltsev/flowhand/internal/server"
+	"github.com/RomanAgaltsev/flowhand/internal/service/task"
 	"github.com/RomanAgaltsev/flowhand/internal/storage"
-	"github.com/RomanAgaltsev/flowhand/internal/storage/queries"
-	"github.com/spf13/cobra"
+	"github.com/RomanAgaltsev/flowhand/internal/storage/txmgr"
 )
 
 var serverCmd = &cobra.Command{
@@ -48,8 +52,16 @@ var serverCmd = &cobra.Command{
 		}
 		defer pool.Close()
 
-		q := queries.New(pool)
-		h := api.NewHandler(q, slog.Default())
+		// Bottom-up: pool -> tx manager (Resolver+TxRunner) -> repos -> service -> handler.
+		txm := txmgr.New(pool)
+		tasksRepo := repotasks.New(txm)
+		outboxRepo := outbox.New()
+
+		h := api.NewHandler(
+			task.NewCommander(tasksRepo, outboxRepo, txm),
+			task.NewQuerier(tasksRepo),
+			slog.Default(),
+		)
 
 		return server.Run(ctx, cfg, h, reg)
 	},
