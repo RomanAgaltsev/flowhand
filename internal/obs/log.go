@@ -1,8 +1,8 @@
 package obs
 
 import (
-	"bytes"
 	"context"
+	"io"
 	"log/slog"
 	"os"
 
@@ -41,45 +41,26 @@ func (h traceHandler) WithGroup(name string) slog.Handler {
 	return traceHandler{Handler: h.Handler.WithGroup(name)}
 }
 
-// Config configures a logger built by NewLoggerWithWriter.
-type Config struct {
-	Format string
-	Level  string
+func newLogger(format, level string, w io.Writer) *slog.Logger {
+	opts := slog.HandlerOptions{Level: parseLevel(level)}
+	var h slog.Handler = slog.NewTextHandler(w, &opts)
+	if format == "json" {
+		h = slog.NewJSONHandler(w, &opts)
+	}
+	// Wrapped here, once: every caller — production and test — gets the same
+	// handler chain, so a test can actually observe the trace stamping.
+	return slog.New(traceHandler{Handler: h})
 }
 
 // NewLogger builds the process logger from observability config, stamping
 // trace/span IDs onto records emitted with the *Context methods.
 func NewLogger(cfg *config.Obs) *slog.Logger {
-	var handler slog.Handler
-
-	opts := slog.HandlerOptions{
-		Level: parseLevel(cfg.LogLevel),
-	}
-
-	handler = slog.NewTextHandler(os.Stdout, &opts)
-	if cfg.LogFormat == "json" {
-		handler = slog.NewJSONHandler(os.Stdout, &opts)
-	}
-
-	logger := slog.New(traceHandler{Handler: handler})
-
-	return logger
+	return newLogger(cfg.LogFormat, cfg.LogLevel, os.Stdout)
 }
 
 // NewLoggerWithWriter builds a logger that writes to buf, for use in tests.
-func NewLoggerWithWriter(cfg Config, buf *bytes.Buffer) *slog.Logger {
-	var handler slog.Handler
-
-	opts := slog.HandlerOptions{
-		Level: parseLevel(cfg.Level),
-	}
-
-	handler = slog.NewTextHandler(buf, &opts)
-	if cfg.Format == "json" {
-		handler = slog.NewJSONHandler(buf, &opts)
-	}
-
-	return slog.New(handler)
+func NewLoggerWithWriter(cfg *config.Obs, w io.Writer) *slog.Logger {
+	return newLogger(cfg.LogFormat, cfg.LogLevel, w)
 }
 
 func parseLevel(s string) slog.Level {

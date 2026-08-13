@@ -247,10 +247,11 @@ tasks:
       - docker compose -f {{.COMPOSE_FILE}} logs -f
 
   run:server:
-    desc: run flowhand server locally
+    desc: run flowhand server locally (tee to .logs/ so promtail ships to Loki)
     deps: [build]
     cmds:
-      - ./{{.BIN}} server
+      - mkdir -p .logs
+      - ./{{.BIN}} server 2>&1 | tee .logs/server.log
 
   migrate:up:
     desc: apply all migrations

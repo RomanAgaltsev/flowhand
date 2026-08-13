@@ -97,6 +97,23 @@ loop:
 			if err != nil {
 				submits.WithLabelValues("error").Inc()
 				slog.Warn("submit failed", "err", err)
+				// Break the pair. Without this, the *second* submit of this
+				// pair would compare itself against a lastID left over from an
+				// earlier pair, and report a replay failure this loop caused.
+				lastID = ""
+				continue
+			}
+
+			if firstOfPair {
+				submits.WithLabelValues("created").Inc()
+				lastID = id
+				continue
+			}
+
+			if lastID == "" {
+				// First half of this pair failed, so there is nothing to
+				// compare against - count it and say nothing.
+				submits.WithLabelValues("created").Inc()
 				continue
 			}
 
@@ -104,15 +121,14 @@ loop:
 			// task ID it minted the first time. Observed from the response,
 			// not assumed from the send order - that is what makes this a
 			// check of the server rather than of this loop.
-			if !firstOfPair && id == lastID {
+			if id == lastID {
 				submits.WithLabelValues("replayed").Inc()
 				slog.Info("replayed", "id", id, "idempotency_key", key)
 				continue
 			}
-			if !firstOfPair {
-				slog.Warn("repeat submit was not replayed",
-					"idempotency_key", key, "first_id", lastID, "second_id", id)
-			}
+
+			slog.Warn("repeat submit was not replayed",
+				"idempotency_key", key, "first_id", lastID, "second_id", id)
 			submits.WithLabelValues("created").Inc()
 			lastID = id
 		}

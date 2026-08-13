@@ -68,12 +68,16 @@ func (s *CreateTaskRequestPayload) init() CreateTaskRequestPayload {
 
 // Ref: #/components/schemas/Error
 type Error struct {
-	Code    string `json:"code"`
+	// Stable machine-readable error symbol. Clients should branch on this, never on `message`, which is
+	// human-facing and may change.
+	Code ErrorCode `json:"code"`
+	// Human-facing detail. For 4xx it names what about the request was wrong; for 5xx it stays
+	// deliberately opaque so server internals never reach the wire.
 	Message string `json:"message"`
 }
 
 // GetCode returns the value of Code.
-func (s *Error) GetCode() string {
+func (s *Error) GetCode() ErrorCode {
 	return s.Code
 }
 
@@ -83,13 +87,70 @@ func (s *Error) GetMessage() string {
 }
 
 // SetCode sets the value of Code.
-func (s *Error) SetCode(val string) {
+func (s *Error) SetCode(val ErrorCode) {
 	s.Code = val
 }
 
 // SetMessage sets the value of Message.
 func (s *Error) SetMessage(val string) {
 	s.Message = val
+}
+
+// Stable machine-readable error symbol. Clients should branch on this, never on `message`, which is
+// human-facing and may change.
+type ErrorCode string
+
+const (
+	ErrorCodeInvalidRequestBody ErrorCode = "invalid_request_body"
+	ErrorCodeInvalidParameter   ErrorCode = "invalid_parameter"
+	ErrorCodeTaskNotFound       ErrorCode = "task_not_found"
+	ErrorCodeInternalError      ErrorCode = "internal_error"
+)
+
+// AllValues returns all ErrorCode values.
+func (ErrorCode) AllValues() []ErrorCode {
+	return []ErrorCode{
+		ErrorCodeInvalidRequestBody,
+		ErrorCodeInvalidParameter,
+		ErrorCodeTaskNotFound,
+		ErrorCodeInternalError,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s ErrorCode) MarshalText() ([]byte, error) {
+	switch s {
+	case ErrorCodeInvalidRequestBody:
+		return []byte(s), nil
+	case ErrorCodeInvalidParameter:
+		return []byte(s), nil
+	case ErrorCodeTaskNotFound:
+		return []byte(s), nil
+	case ErrorCodeInternalError:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *ErrorCode) UnmarshalText(data []byte) error {
+	switch ErrorCode(data) {
+	case ErrorCodeInvalidRequestBody:
+		*s = ErrorCodeInvalidRequestBody
+		return nil
+	case ErrorCodeInvalidParameter:
+		*s = ErrorCodeInvalidParameter
+		return nil
+	case ErrorCodeTaskNotFound:
+		*s = ErrorCodeTaskNotFound
+		return nil
+	case ErrorCodeInternalError:
+		*s = ErrorCodeInternalError
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
 }
 
 type GetTaskInternalServerError Error

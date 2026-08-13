@@ -12,14 +12,19 @@ import (
 	domaintasks "github.com/RomanAgaltsev/flowhand/internal/domain/tasks"
 )
 
-// SubmitCommand is SubmitCommand.
+// SubmitCommand is the write-side input for submitting a task: what the caller
+// asked for, stripped of transport concerns. An empty IdempotencyKey means "no
+// key" — the Commander turns that into a NULL column so the partial unique
+// index ignores it.
 type SubmitCommand struct {
 	Handler        string
 	Payload        json.RawMessage
 	IdempotencyKey string
 }
 
-// Commander is Commander.
+// Commander is the write side of the task service. It owns the submit
+// transaction — aggregate insert plus outbox append — and the idempotency
+// replay decision. now and newID are injected so tests control both.
 type Commander struct {
 	tasks  TasksRepo
 	outbox OutboxRepo
@@ -28,7 +33,8 @@ type Commander struct {
 	newID  func() (uuid.UUID, error)
 }
 
-// NewCommander creates new Commander.
+// NewCommander wires the write side over its persistence ports, with the real
+// clock and a UUIDv7 generator.
 func NewCommander(tasks TasksRepo, outbox OutboxRepo, tx TxRunner) *Commander {
 	return &Commander{
 		tasks:  tasks,
@@ -42,7 +48,7 @@ func NewCommander(tasks TasksRepo, outbox OutboxRepo, tx TxRunner) *Commander {
 // Submit stores a new task and its Submitted event. On an idempotency-key
 // collision it returns the task already stored under that key.
 //
-// Returns the aggregate rather than tha bare uuid.UUID: the API needs
+// Returns the aggregate rather than a bare uuid.UUID: the API needs
 // status and created_at for its 201 body, and a read-after-write to fetch them
 // is both a wasted round trip and unusable on the replay path.
 func (c *Commander) Submit(ctx context.Context, cmd SubmitCommand) (domaintasks.Task, error) {

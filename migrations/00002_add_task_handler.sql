@@ -1,4 +1,4 @@
--- +goose UP
+-- +goose Up
 ALTER TABLE tasks ADD COLUMN handler TEXT NOT NULL DEFAULT '';
 ALTER TABLE tasks ALTER COLUMN handler DROP DEFAULT;
 

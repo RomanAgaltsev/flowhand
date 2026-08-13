@@ -17,22 +17,24 @@ import (
 // uniqueViolation is Postgres SQLSTATE 23505.
 const uniqueViolation = "23505"
 
-// Repo is postgres repo.
+// Repo is the Postgres-backed task repository. It resolves its DBTX per call
+// so the same instance works inside a transaction or on the bare pool,
+// depending on what the Resolver finds bound to the context.
 type Repo struct {
 	resolver repository.Resolver
 }
 
-// New creates new repo.
+// New returns a task repository that resolves its connection through r.
 func New(r repository.Resolver) *Repo {
 	return &Repo{resolver: r}
 }
 
-// Insert inserts new task into repo.
+// Insert persists a new task. A unique-constraint violation on the idempotency
+// key is translated to domaintasks.ErrConflict so callers never see SQLSTATE.
 func (r *Repo) Insert(ctx context.Context, t domaintasks.Task, idempotencyKey *string) error {
 	q := queries.New(r.resolver.Resolve(ctx))
 	if _, err := q.CreateTask(ctx, toRow(t, idempotencyKey)); err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == uniqueViolation {
+		if isUniqueViolation(err) {
 			return fmt.Errorf("insert task %s: %w", t.ID(), domaintasks.ErrConflict)
 		}
 		return fmt.Errorf("insert task %s: %w", t.ID(), err)
@@ -60,11 +62,16 @@ func (r *Repo) GetByIdempotencyKey(ctx context.Context, key string) (domaintasks
 	return toDomain(row), nil
 }
 
-// translate maps driver errors to domain sentinels so on layer above this one
+// translate maps driver errors to domain sentinels so no layer above this one
 // has to import pgx.
 func translate(err error) error {
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domaintasks.ErrNotFound
 	}
 	return err
+}
+
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == uniqueViolation
 }

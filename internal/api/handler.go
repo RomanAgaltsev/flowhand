@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
-	"strconv"
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel"
@@ -26,7 +24,7 @@ type Commander interface {
 	Submit(ctx context.Context, cmd task.SubmitCommand) (domaintasks.Task, error)
 }
 
-// Querier is the read side. Satisfied by *task.Quirer.
+// Querier is the read side. Satisfied by *task.Querier.
 type Querier interface {
 	Get(ctx context.Context, id uuid.UUID) (task.TaskView, error)
 }
@@ -87,8 +85,10 @@ func (h *Handler) GetTask(ctx context.Context, params oas.GetTaskParams) (oas.Ge
 	view, err := h.q.Get(ctx, params.ID)
 	if err != nil {
 		if errors.Is(err, domaintasks.ErrNotFound) {
+			// Same symbol vocabulary as api.ErrorHandler: `code` is the stable
+			// thing clients branch on, never a stringified HTTP status.
 			return &oas.GetTaskNotFound{
-				Code:    strconv.Itoa(http.StatusNotFound),
+				Code:    oas.ErrorCodeTaskNotFound,
 				Message: "task ID not found",
 			}, nil
 		}

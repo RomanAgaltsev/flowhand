@@ -6,11 +6,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/contrib/instrumentation/runtime"
-	"go.opentelemetry.io/otel/attribute"
 	otelprom "go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/sdk/metric"
-	"go.opentelemetry.io/otel/sdk/resource"
-	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
 
 	"github.com/RomanAgaltsev/flowhand/internal/config"
 )
@@ -23,40 +20,34 @@ func NewMeterProvider(cfg *config.Config, reg prometheus.Registerer) (*metric.Me
 		return nil, fmt.Errorf("prometheus exporter: %w", err)
 	}
 
-	var deploymentEnvironmentName attribute.KeyValue
-	switch cfg.Env {
-	case "dev":
-		deploymentEnvironmentName = semconv.DeploymentEnvironmentNameDevelopment
-	case "staging":
-		deploymentEnvironmentName = semconv.DeploymentEnvironmentNameStaging
-	case "prod":
-		deploymentEnvironmentName = semconv.DeploymentEnvironmentNameProduction
-	}
-
-	res, err := resource.Merge(
-		resource.Default(),
-		resource.NewWithAttributes(
-			semconv.SchemaURL,
-			semconv.ServiceName(cfg.Obs.ServiceName),
-			semconv.ServiceVersion(cfg.Version),
-			deploymentEnvironmentName,
-		),
-	)
+	res, err := newResource(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("merge resource: %w", err)
 	}
 
-	view := metric.NewView(
-		metric.Instrument{Name: "*.duration"},
+	// Boundaries are milliseconds, so the selector pins Unit too: if an instrument
+	// ever reports seconds (stable HTTP semconv uses "s" for
+	// http.server.request.duration), this View must NOT match it. A View that
+	// silently reinterprets seconds as milliseconds makes every SLO look met.
+	msView := metric.NewView(
+		metric.Instrument{Name: "*.duration", Unit: "ms"},
 		metric.Stream{Aggregation: metric.AggregationExplicitBucketHistogram{
-			Boundaries: []float64{5, 10, 20, 30, 40, 50, 75, 100, 250, 500, 1000}, // ms, for a p99<50ms SLO
+			Boundaries: []float64{5, 10, 20, 30, 40, 50, 75, 100, 250, 500, 1000},
+		}},
+	)
+
+	// Same SLO, expressed in seconds, for instruments that follow stable semconv.
+	sView := metric.NewView(
+		metric.Instrument{Name: "*.duration", Unit: "s"},
+		metric.Stream{Aggregation: metric.AggregationExplicitBucketHistogram{
+			Boundaries: []float64{.005, .010, .020, .030, .040, .050, .075, .100, .250, .500, 1},
 		}},
 	)
 
 	meterProvider := metric.NewMeterProvider(
 		metric.WithReader(exporter),
 		metric.WithResource(res),
-		metric.WithView(view),
+		metric.WithView(msView, sView),
 	)
 
 	if err := runtime.Start(

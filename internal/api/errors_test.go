@@ -36,18 +36,40 @@ func TestErrorEnvelopes_OnTheWire(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	tests := []struct {
-		name     string
-		method   string
-		path     string
-		body     string
-		wantCode int
+		name       string
+		method     string
+		path       string
+		body       string
+		wantCode   int
+		wantSymbol string
+		// wantDetail is a substring the message must carry. Empty means the
+		// message must NOT describe internals — see the 5xx cases below.
+		wantDetail string
 	}{
-		{"malformed json body", http.MethodPost, "/v1/tasks", `{`, http.StatusBadRequest},
-		{"validation failure", http.MethodPost, "/v1/tasks", `{"handler":""}`, http.StatusBadRequest},
-		{"missing required field", http.MethodPost, "/v1/tasks", `{}`, http.StatusBadRequest},
-		{"undecodable path param", http.MethodGet, "/v1/tasks/not-a-uuid", "", http.StatusBadRequest},
-		{"handler error on create", http.MethodPost, "/v1/tasks", `{"handler":"echo"}`, http.StatusInternalServerError},
-		{"handler error on get", http.MethodGet, "/v1/tasks/0198f0ec-0000-7000-8000-000000000000", "", http.StatusInternalServerError},
+		{
+			name: "malformed json body", method: http.MethodPost, path: "/v1/tasks", body: `{`,
+			wantCode: http.StatusBadRequest, wantSymbol: "invalid_request_body", wantDetail: "decode",
+		},
+		{
+			name: "validation failure", method: http.MethodPost, path: "/v1/tasks", body: `{"handler":""}`,
+			wantCode: http.StatusBadRequest, wantSymbol: "invalid_request_body", wantDetail: "handler",
+		},
+		{
+			name: "missing required field", method: http.MethodPost, path: "/v1/tasks", body: `{}`,
+			wantCode: http.StatusBadRequest, wantSymbol: "invalid_request_body", wantDetail: "handler",
+		},
+		{
+			name: "undecodable path param", method: http.MethodGet, path: "/v1/tasks/not-a-uuid",
+			wantCode: http.StatusBadRequest, wantSymbol: "invalid_parameter", wantDetail: "id",
+		},
+		{
+			name: "handler error on create", method: http.MethodPost, path: "/v1/tasks", body: `{"handler":"echo"}`,
+			wantCode: http.StatusInternalServerError, wantSymbol: "internal_error",
+		},
+		{
+			name: "handler error on get", method: http.MethodGet, path: "/v1/tasks/0198f0ec-0000-7000-8000-000000000000",
+			wantCode: http.StatusInternalServerError, wantSymbol: "internal_error",
+		},
 	}
 
 	for _, tt := range tests {
@@ -80,8 +102,25 @@ func TestErrorEnvelopes_OnTheWire(t *testing.T) {
 				Message string `json:"message"`
 			}
 			require.NoError(t, json.Unmarshal(body, &envelope), "body was %q", body)
-			assert.Equal(t, http.StatusText(tt.wantCode), envelope.Message)
-			assert.NotEmpty(t, envelope.Code)
+
+			// `code` is the stable symbol clients branch on. Asserting it here
+			// is what stops someone reverting it to a stringified HTTP status,
+			// which would duplicate the status line and say nothing.
+			assert.Equal(t, tt.wantSymbol, envelope.Code)
+			assert.NotEmpty(t, envelope.Message)
+
+			if tt.wantDetail != "" {
+				// 4xx: the fault is the caller's, so the message must name what
+				// about *their* request was wrong. A generic "Bad Request" here
+				// makes four distinct failures indistinguishable.
+				assert.Contains(t, envelope.Message, tt.wantDetail)
+				return
+			}
+			// 5xx: the fault is ours, so the message must stay opaque - no
+			// DSNs, table names or wrapped driver errors on the wire.
+			assert.Equal(t, "internal server error", envelope.Message)
+			assert.NotContains(t, envelope.Message, "db down",
+				"5xx message must not leak the underlying error")
 		})
 	}
 }

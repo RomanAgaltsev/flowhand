@@ -1,0 +1,20 @@
+# Dashboard provisioning.
+#
+# Phase 0 ships NO dashboards on purpose — the exit criteria are met through
+# Grafana Explore, and dashboards are Phase 4 scope. This provider exists so
+# that the file is valid YAML Grafana can actually load (it was previously an
+# empty file, which provisions nothing and reports nothing), and so Phase 4 can
+# add dashboards by dropping JSON into ./dashboards/ with no config change.
+apiVersion: 1
+
+providers:
+  - name: flowhand
+    orgId: 1
+    type: file
+    disableDeletion: false
+    # Let edits in the UI be saved back to disk while iterating in Phase 4.
+    allowUiUpdates: true
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/provisioning/dashboards/dashboards
+      foldersFromFilesStructure: true

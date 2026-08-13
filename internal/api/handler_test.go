@@ -156,7 +156,7 @@ func TestGetTask_NotFound(t *testing.T) {
 
 	e, ok := resp.(*oas.GetTaskNotFound)
 	require.True(t, ok)
-	assert.Equal(t, "404", e.Code)
+	assert.Equal(t, oas.ErrorCodeTaskNotFound, e.Code)
 }
 
 func TestCreateTask_ServiceError(t *testing.T) {

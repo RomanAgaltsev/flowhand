@@ -234,14 +234,25 @@ task logs    # tail stack logs
 Other Taskfile targets:
 
 ```sh
+task setup          # install every pinned tool into ./bin (run this first)
 task build          # build the flowhand binary
 task test           # go test -race ./...
+task test:int       # integration tests (testcontainers; requires Docker)
+task fuzz           # run every fuzz target (FUZZTIME=30s by default)
 task lint           # golangci-lint run
+task lint:arch      # go-arch-lint — enforce the layered architecture
 task vuln           # govulncheck ./...
+task gen            # regenerate protobuf + ogen + sqlc
 task run:server     # build + run the control-plane server
 task migrate:up     # apply database migrations
 task migrate:down   # roll back one migration
+task demo           # launch the reference producer into a running stack
 ```
+
+See [`docs/getting-started.md`](docs/getting-started.md) for the five-minute
+walkthrough from a clean clone, and
+[`docs/design/architecture/import-rules.md`](docs/design/architecture/import-rules.md)
+for the layering rules and what enforces them.
 
 ## Roadmap (high level)
 

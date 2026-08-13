@@ -23,9 +23,17 @@ datasources:
     access: proxy
     url: http://loki:3100
     jsonData:
+      # Two matchers because the log format is configurable: slog's text handler
+      # writes `trace_id=abc`, its JSON handler (the default) writes
+      # `"trace_id":"abc"`. Matching only the text shape silently breaks the
+      # jump-to-trace link for anyone running with the default format.
       derivedFields:
         - name: trace_id
           matcherRegex: "trace_id=(\\w+)"
+          url: "$${__value.raw}"
+          datasourceUid: tempo
+        - name: trace_id_json
+          matcherRegex: '"trace_id":"(\w+)"'
           url: "$${__value.raw}"
           datasourceUid: tempo
   - name: Pyroscope

@@ -45,7 +45,8 @@ Expected:
 
 ```
 OK   00001_initial_tasks.sql
-goose: successfully migrated database to version: 1
+OK   00002_add_task_handler.sql
+goose: successfully migrated database to version: 2
 ```
 
 > Re-run this after any `task down`/`task up` cycle that resets the Postgres
@@ -176,24 +177,37 @@ Two pieces make that happen:
   `deploy/compose/grafana/provisioning/datasources/datasources.yml` parses
   `trace_id=` out of the log line — which is why step 3 sets the text format.
 
-> **Known gap — the Tempo → Loki jump does not work yet in this setup.**
-> `task run:server` runs flowhand on the host, but promtail only tails
-> container logs (`/var/lib/docker/containers/*/*-json.log`, see
-> `deploy/compose/promtail/promtail.yml`). The server's stdout therefore never
-> reaches Loki, and **Logs for this span** finds nothing to show.
->
-> Verify for yourself — this returns only Loki's own query logs, never a
-> flowhand line:
->
-> ```bash
-> curl -s -G "http://127.0.0.1:3100/loki/api/v1/query_range" \
->   --data-urlencode 'query={job="containerlogs"} |= "msg=listening"'
-> ```
->
-> Closing it needs one of: tee the server output to a host directory that
-> promtail is configured to tail, run flowhand as a compose service, or push
-> from the app with a Loki slog handler. Until then, correlate by copying the
-> `trace_id` from the terminal and searching Tempo directly.
+The shipping side works too. `task run:server` tees the server's output into
+`.logs/server.log`, which promtail tails through a bind mount and pushes to Loki
+under `job="flowhand"`:
+
+```
+Taskfile run:server ──tee──▶ .logs/server.log
+                                   │  (bind-mounted read-only at
+                                   │   /var/log/flowhand in the promtail container)
+                             promtail ──▶ Loki   {job="flowhand"}
+```
+
+Confirm the pipeline end to end — this should return your server's startup line:
+
+```bash
+curl -s -G "http://127.0.0.1:3100/loki/api/v1/query_range" \
+  --data-urlencode 'query={job="flowhand"} |= "msg=listening"'
+```
+
+Then in Grafana: open the trace in Tempo and click **Logs for this span**. You
+should land on the matching flowhand lines.
+
+> **Why the tee, rather than just running the server.** flowhand is not
+> containerised until Phase 4, so it runs on the *host*, while promtail only
+> sees files. Writing to a directory promtail tails is the smallest bridge
+> between the two. Phase 4 makes flowhand a compose service and the tee goes
+> away.
+
+> **If the jump still finds nothing**, check `FLOWHAND_OBS_LOG_FORMAT`. The Loki
+> datasource carries two `derivedFields` matchers — `trace_id=(\w+)` for slog's
+> text output and `"trace_id":"(\w+)"` for its JSON output — so either format
+> links. A third format would not.
 
 ## Endpoints
 
@@ -204,7 +218,41 @@ Two pieces make that happen:
 | `http://127.0.0.1:8080/debug/pprof/` | pprof                               |
 | `http://127.0.0.1:3000`              | Grafana                             |
 | `http://127.0.0.1:3200`              | Tempo API                           |
-| `http://127.0.0.1:9090`              | Prometheus                          |
+| `http://127.0.0.1:9090/prometheus`   | Prometheus (served under a route prefix) |
+| `http://127.0.0.1:9093`              | Alertmanager                        |
+| `http://127.0.0.1:4040`              | Pyroscope                           |
+
+Prometheus runs with `--web.route-prefix=/prometheus`, so every one of its
+endpoints moves — `/prometheus/-/healthy`, `/prometheus/api/v1/targets`,
+`/prometheus/metrics`. Bare `http://127.0.0.1:9090/` will 404.
+
+## 8. Run the reference producer
+
+`flowhand-demo` submits one task per second and exposes its own `/metrics`, so
+Prometheus can chart submit throughput. It needs the stack up, the migrations
+applied and the server running (steps 1–3) — without those it submits into a
+void and the rate panel stays flat with no indication why.
+
+```bash
+task demo
+```
+
+Then in Grafana **Explore** (Prometheus datasource, not a dashboard —
+dashboards are Phase 4):
+
+```promql
+rate(flowhand_demo_submits_total[1m])
+```
+
+Submits should appear within ~10 seconds. The `result` label separates
+`created` from `replayed`: the producer submits every idempotency key twice and
+checks that the second submit comes back with the *same* task ID, so a healthy
+`replayed` rate is evidence the server's idempotency replay works — observed
+from the response, not assumed.
+
+```bash
+docker compose -f deploy/compose/docker-compose.yml logs -f flowhand-demo
+```
 
 ## Troubleshooting
 
@@ -215,11 +263,19 @@ so pointing a metric exporter at `:4317` fails with `DeadlineExceeded`.
 
 **`relation "tasks" does not exist`.** Re-run step 2.
 
-**No jump-to-logs button, or it finds nothing.** Expected for now — the server
-runs on the host and promtail only tails container logs. See the known gap in
-step 7. If you close that gap and it still fails, check
-`FLOWHAND_OBS_LOG_FORMAT` is `text` (step 3), since the datasource regex only
-matches the text format.
+**No jump-to-logs button, or it finds nothing.** The server's output reaches
+Loki only through the tee in `task run:server`. Check, in order: `.logs/server.log`
+exists and is growing; promtail is running (`docker compose ... ps promtail`);
+and the Loki query in step 7 returns lines. Starting the binary directly
+(`./bin/flowhand server`) instead of via `task run:server` skips the tee, which
+is the usual cause.
+
+**Prometheus URL 404s.** It is served under `/prometheus` — see the Endpoints
+table.
+
+**`task demo` fails to build.** It builds `cmd/flowhand-demo/Dockerfile` from
+the *repo root* as context, so run it from anywhere in the repo but never with
+a narrowed context; the module's `go.mod` has to be visible.
 
 **Config env var seems ignored.** Only the first underscore separates section
 from key: `FLOWHAND_OBS_LOG_FORMAT` → `obs.log_format`. Precedence is

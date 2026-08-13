@@ -7,6 +7,9 @@ volumes:
   kafka-data:
   seaweedfs-data:
   grafana-data:
+  prometheus-data:
+  tempo-data:
+  loki-data:
 
 networks:
   flowhand:
@@ -126,9 +129,8 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
-      - ./prometheus/prometheus_data:/prometheus
       - ./prometheus/rules:/etc/prometheus/rules:ro
-
+      - prometheus-data:/prometheus
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--web.external-url=/prometheus"
@@ -137,28 +139,43 @@ services:
     ports:
       - "9090:9090"
     networks: [flowhand]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:9090/prometheus/-/healthy || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
 
   tempo:
     image: grafana/tempo:2.10.7
     command: ["-config.file=/etc/tempo/tempo.yaml"]
     volumes:
-      - ./tempo/tempo.yml:/etc/tempo/tempo.yaml
-      - ./tempo/tempo_data:/var/tempo
+      - ./tempo/tempo.yml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
     ports:
       - "3200:3200" # Tempo API
       - "4317:4317" # OTLP gRPC
       - "4318:4318" # OTLP HTTP
     networks: [flowhand]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:3200/ready || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
 
   loki:
     image: grafana/loki:3.4.2
     command: ["-config.file=/etc/loki/loki.yaml"]
     volumes:
-      - ./loki/loki.yml:/etc/loki/loki.yaml
-      - ./loki/loki_data:/loki
+      - ./loki/loki.yml:/etc/loki/loki.yaml:ro
+      - loki-data:/loki
     ports:
       - "3100:3100"
     networks: [flowhand]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:3100/ready || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
 
   promtail:
     image: grafana/promtail:3.6.11
@@ -167,13 +184,16 @@ services:
       - ./promtail/promtail.yml:/etc/promtail/promtail.yaml
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ../../.logs:/var/log/flowhand:ro
     depends_on:
-      - loki
+      loki: { condition: service_healthy }
     networks: [flowhand]
 
   pyroscope:
-    image: grafana/pyroscope:latest
-    command: ["server", "-config.file=/etc/pyroscope/config.yaml"]
+    image: grafana/pyroscope:1.16.0   # pin, like every other service here
+    command: ["-config.file=/etc/pyroscope/config.yaml"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # or the scrape target never resolves on Linux
     volumes:
       - ./pyroscope/config.yml:/etc/pyroscope/config.yaml:ro
     ports: ["4040:4040"]
@@ -189,7 +209,15 @@ services:
       - grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
     ports: ["3000:3000"]
-    depends_on: [prometheus, tempo, loki]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:3000/api/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    depends_on:
+      prometheus: { condition: service_healthy }
+      tempo:      { condition: service_healthy }
+      loki:       { condition: service_healthy }
     networks: [flowhand]
 
   flowhand-demo:

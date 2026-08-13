@@ -2,11 +2,28 @@ groups:
   - name: slo-burn-example
     interval: 30s
     rules:
+      # Real series, emitted by the OTel→Prometheus bridge via otelhttp.
+      #
+      # The instrument name tracks otelhttp's semconv. Since otelhttp v0.67 the
+      # legacy `http.server.duration` (milliseconds) is gone; the stable name is
+      # `http.server.request.duration` in SECONDS, which the bridge exports as
+      # http_server_request_duration_seconds_*. If you bump otelhttp and this
+      # alert goes quiet, check the name here first:
+      #   curl -s localhost:8080/metrics | grep duration
       - alert: ExampleHighErrorRate
-        expr: rate(http_requests_total{job="flowhand",status=~"5.."}[5m]) > 0.05
+        expr: |
+          sum(rate(http_server_request_duration_seconds_count{job="flowhand",http_response_status_code=~"5.."}[5m]))
+            / sum(rate(http_server_request_duration_seconds_count{job="flowhand"}[5m])) > 0.05
         for: 2m
-        labels:
-          severity: warning
+        labels: { severity: warning }
         annotations:
           summary: "Example: 5xx rate > 5% over 5 minutes"
-          description: "Placeholder rule wired in Phase 0 to prove the pipeline. Replace in Phase 4 with real SLO burn rules."
+
+      # Always-firing canary: proves Prometheus → Alertmanager delivery works.
+      # Delete in Phase 4 when real SLO burn rules land.
+      - alert: AlertPipelineCanary
+        expr: vector(1)
+        for: 1m
+        labels: { severity: none }
+        annotations:
+          summary: "Canary — if this is not visible in Alertmanager, routing is broken."

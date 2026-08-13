@@ -7,7 +7,7 @@ import "time"
 // outbox) with the envelope version tag below.
 type Event interface {
 	EventName() string // stable wire identifier, e.g. "task.submitted.v1"
-	OccuredAt() time.Time
+	OccurredAt() time.Time
 }
 
 // EnvelopeVersion is the schema version of the envelope wrapping every Event

@@ -1,54 +1,125 @@
 # Architectural fitness function for the layered architecture.
+#
+# Direction: api → service → {domain, repository, client}; repository → domain;
+# client → domain. domain is a leaf — it must not depend on anything else in
+# internal/, except that a bounded context may use the shared domain package.
+#
+# Two things about this file are easy to get wrong, both learned the hard way
+# (see docs/design/architecture/import-rules.md):
+#
+#   1. `mayDependOn: []` is a SCHEMA ERROR, not "depends on nothing". It makes
+#      go-arch-lint exit 1 before analysing a single import, so the whole gate
+#      silently does nothing. A leaf is expressed by OMITTING the component
+#      from `deps:` entirely.
+#   2. A component whose `in:` covers a parent directory does NOT cover its
+#      sub-packages as *import targets*. Naming `service` in a `mayDependOn`
+#      list does not permit importing `service/task`. Every package therefore
+#      gets its own component below — verbose, but unambiguous, and it doubles
+#      as the written-down import graph.
 
 version: 3
 workdir: internal
-
-# Direction: api → service → {domain, repository, client}; repository → domain; client → domain.
-# domain is a leaf — it must not depend on anything in internal/.
 
 allow:
   depOnAnyVendor: true
   deepScan: true
 
 components:
-  api:
-    in:
-      - api/**
-  service:
-    in:
-      - service/**
-  domain:
-    in:
-      - domain/**
-  repository:
-    in:
-      - repository/**
-  client:
-    in:
-      - client/**
+  # Transport
+  api: { in: api }
+  oas: { in: api/oas } # generated; a leaf by construction
+  server: { in: server }
+
+  # Composition root
+  cli: { in: cli }
+
+  # Service layer (one component per bounded context)
+  service-task: { in: service/task }
+  service-workflow: { in: service/workflow }
+  service-schedule: { in: service/schedule }
+
+  # Domain layer
+  domain: { in: domain }
+  domain-tasks: { in: domain/tasks }
+  domain-workflows: { in: domain/workflows }
+  domain-schedules: { in: domain/schedules }
+
+  # Persistence
+  repository: { in: repository }
+  repository-tasks: { in: repository/tasks }
+  repository-outbox: { in: repository/outbox }
+  repository-workflows: { in: repository/workflows }
+  repository-schedules: { in: repository/schedules }
+
+  # Infrastructure
+  storage: { in: storage }
+  queries: { in: storage/queries }
+  txmgr: { in: storage/txmgr }
+  client: { in: client }
+  config: { in: config }
+  obs: { in: obs }
 
 deps:
+  # The composition root is the one component allowed to see every layer at
+  # once — that is what makes it the composition root.
+  cli:
+    mayDependOn:
+      - api
+      - config
+      - obs
+      - server
+      - service-task
+      - repository-tasks
+      - repository-outbox
+      - storage
+      - txmgr
+
+  server:
+    mayDependOn: [api, oas, config]
+
+  # Transport talks to the service layer and to the domain types that cross the
+  # boundary. It must NOT reach repositories, sqlc or pgx — that is the whole
+  # point of the Commander/Querier split.
   api:
-    mayDependOn:
-      - service
-      - domain  # for value-object types crossing the boundary
-  service:
-    mayDependOn:
-      - domain
-      - repository
-      - client
-  repository:
-    mayDependOn:
-      - domain
-  client:
-    mayDependOn:
-      - domain
-  domain:
-    mayDependOn: []  # leaf — no internal deps allowed
+    mayDependOn: [oas, service-task, domain-tasks]
 
-commonComponents:
-  - domain  # any component above may import from domain (value objects, events)
+  service-task:
+    mayDependOn: [domain, domain-tasks, repository, client]
+  service-workflow:
+    mayDependOn: [domain, domain-workflows, repository, client]
+  service-schedule:
+    mayDependOn: [domain, domain-schedules, repository, client]
 
-# Catch packages that don't match any component above — forces explicit categorization.
+  # Repositories map storage rows to domain aggregates, so they see sqlc and
+  # their own bounded context — and nothing above them.
+  repository-tasks:
+    mayDependOn: [domain, domain-tasks, repository, queries]
+  repository-outbox:
+    mayDependOn: [domain, repository, queries]
+  repository-workflows:
+    mayDependOn: [domain, domain-workflows, repository, queries]
+  repository-schedules:
+    mayDependOn: [domain, domain-schedules, repository, queries]
+
+  txmgr:
+    mayDependOn: [repository]
+  storage:
+    mayDependOn: [config]
+  obs:
+    mayDependOn: [config]
+
+  # A bounded context may use the shared domain package (the Event contract);
+  # it must never import a sibling context.
+  domain-tasks:
+    mayDependOn: [domain]
+  domain-workflows:
+    mayDependOn: [domain]
+  domain-schedules:
+    mayDependOn: [domain]
+
+  # Leaves — deliberately absent from deps, which denies them every internal
+  # dependency: domain, oas, queries, client, config.
+  # Do NOT "fix" this by adding `mayDependOn: []`; see the header note.
+
 excludeFiles:
-  - '^.*_test\.go$'  # tests may cross layers; production code may not
+  - '^.*_test\.go$' # tests may cross layers; production code may not

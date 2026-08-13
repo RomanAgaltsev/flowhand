@@ -38,3 +38,4 @@ loki_data
 prometheus_data
 tempo_data
 .task/
+.logs/

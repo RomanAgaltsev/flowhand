@@ -53,7 +53,7 @@ paths:
         "500":
           description: Server error
           content:
-             application/json:
+            application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
 components:
@@ -86,5 +86,15 @@ components:
       type: object
       required: [code, message]
       properties:
-        code: { type: string }
-        message: { type: string }
+        code:
+          type: string
+          description: >
+            Stable machine-readable error symbol. Clients should branch on this,
+            never on `message`, which is human-facing and may change.
+          enum: [invalid_request_body, invalid_parameter, task_not_found, internal_error]
+        message:
+          type: string
+          description: >
+            Human-facing detail. For 4xx it names what about the request was
+            wrong; for 5xx it stays deliberately opaque so server internals
+            never reach the wire.

@@ -31,5 +31,5 @@ func NewSubmitted(t Task, now time.Time) Submitted {
 // EventName returns event name.
 func (e Submitted) EventName() string { return "task.submitted.v1" }
 
-// OccuredAt returns time of event ocurrence.
-func (e Submitted) OccuredAt() time.Time { return e.ocurredAt }
+// OccurredAt returns time of event ocurrence.
+func (e Submitted) OccurredAt() time.Time { return e.ocurredAt }
