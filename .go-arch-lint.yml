@@ -22,7 +22,23 @@ workdir: internal
 
 allow:
   depOnAnyVendor: true
-  deepScan: true
+
+  # deepScan is OFF deliberately. It adds a second analysis — "method calls and
+  # dependency injections" — on top of the always-on component-import check.
+  # For a manually-DI-wired app that analysis reports the composition root's
+  # wiring as component relations, in the REVERSE of the import direction:
+  # passing tasksRepo into task.NewCommander is reported as
+  # `repository-tasks --> service-task`, and passing txm into repotasks.New as
+  # `txmgr --> repository-tasks`. Those are facts about internal/cli/server.go,
+  # not layering violations, and allowing them would require writing backwards
+  # arrows into deps: below — making this file lie about the architecture it
+  # documents.
+  #
+  # It is also not platform-stable: the same v1.17.0 binary reports these on
+  # Linux and stays silent on Windows, so a green local run proved nothing.
+  # The import-direction rule — which is what ADR 0003 actually asks for — is
+  # the "Base: component imports" linter, and that is always on.
+  deepScan: false
 
 components:
   # Transport
