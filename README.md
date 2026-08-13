@@ -3,6 +3,7 @@
 [![CI](https://github.com/RomanAgaltsev/flowhand/actions/workflows/ci.yml/badge.svg)](https://github.com/RomanAgaltsev/flowhand/actions/workflows/ci.yml)
 ![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)
 ![Phase](https://img.shields.io/badge/phase-0%20foundations%20complete-brightgreen)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 **A distributed task & workflow orchestration service in Go — built deliberately, in
 public, as a learning project.**
@@ -517,6 +518,12 @@ most want to talk about in an interview.
   OpenAPI generates the types and nothing else — the default handler still writes
   `text/plain`, so the spec promised JSON the server never sent. Caught only by
   [testing on the wire](internal/api/errors_test.go).
+
+---
+
+## License
+
+[MIT](LICENSE) © 2026 Roman Agaltsev
 
 ---
 
