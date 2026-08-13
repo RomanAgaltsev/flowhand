@@ -1,0 +1,54 @@
+# Architectural fitness function for the layered architecture.
+
+version: 3
+workdir: internal
+
+# Direction: api → service → {domain, repository, client}; repository → domain; client → domain.
+# domain is a leaf — it must not depend on anything in internal/.
+
+allow:
+  depOnAnyVendor: true
+  deepScan: true
+
+components:
+  api:
+    in:
+      - api/**
+  service:
+    in:
+      - service/**
+  domain:
+    in:
+      - domain/**
+  repository:
+    in:
+      - repository/**
+  client:
+    in:
+      - client/**
+
+deps:
+  api:
+    mayDependOn:
+      - service
+      - domain  # for value-object types crossing the boundary
+  service:
+    mayDependOn:
+      - domain
+      - repository
+      - client
+  repository:
+    mayDependOn:
+      - domain
+  client:
+    mayDependOn:
+      - domain
+  domain:
+    mayDependOn: []  # leaf — no internal deps allowed
+
+commonComponents:
+  - domain  # any component above may import from domain (value objects, events)
+
+# Catch packages that don't match any component above — forces explicit categorization.
+excludeFiles:
+  - '^.*_test\.go$'  # tests may cross layers; production code may not

@@ -12,6 +12,7 @@ vars:
   GOOSE_VERSION: 'v3.27.2'
   SQLC_VERSION: 'v1.31.1'
   GOVULNCHECK_VERSION: 'v1.1.4'
+  GO_ARCH_LINT_VERSION: 'v1.17.0'
 
   BIN_DIR: '{{.ROOT_DIR | replace "\\" "/"}}/bin'
   EXE_EXT: '{{if eq OS "windows"}}.exe{{end}}'
@@ -25,6 +26,7 @@ vars:
   GOOSE: '{{.BIN_DIR}}/goose{{.EXE_EXT}}'
   SQLC: '{{.BIN_DIR}}/sqlc{{.EXE_EXT}}'
   GOVULNCHECK: '{{.BIN_DIR}}/govulncheck{{.EXE_EXT}}'
+  GO_ARCH_LINT: '{{.BIN_DIR}}/go-arch-lint{{.EXE_EXT}}'
 
 
   MODULE: github.com/RomanAgaltsev/flowhand
@@ -50,6 +52,14 @@ tasks:
       - GOBIN={{.BIN_DIR}} go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@{{.GOLANGCI_LINT_VERSION}}
     status:
       - ls {{.GOLANGCI_LINT}} >/dev/null 2>&1
+
+  go-arch-lint:install:
+    desc: install go-arch-lint
+    cmds:
+      - echo 'installing go-arch-lint...'
+      - GOBIN={{.BIN_DIR}} go install github.com/fe3dback/go-arch-lint@{{.GO_ARCH_LINT_VERSION}}
+    status:
+      - ls {{.GO_ARCH_LINT}} >/dev/null 2>&1
 
   govulncheck:install:
     cmds: ['GOBIN={{.BIN_DIR}} go install golang.org/x/vuln/cmd/govulncheck@{{.GOVULNCHECK_VERSION}}']
@@ -98,7 +108,7 @@ tasks:
 
   setup:
     desc: install all tools
-    deps: [formatters:install, golangci-lint:install, buf:install, proto:install-plugins, ogen:install, goose:install, sqlc:install]
+    deps: [formatters:install, golangci-lint:install, buf:install, proto:install-plugins, ogen:install, goose:install, sqlc:install, go-arch-lint:install]
 
   format:
     desc: format code (gofumpt + gci)
@@ -114,6 +124,12 @@ tasks:
     deps: [golangci-lint:install]
     cmds:
       - '{{.GOLANGCI_LINT}} run --allow-parallel-runners ./... --config=.golangci.yml'
+
+  lint:arch:
+      desc: Enforce layered architecture (go-arch-lint)
+      deps: [go-arch-lint:install]
+      cmds:
+        - '{{.GO_ARCH_LINT}} check'
 
   proto:gen:
     desc: regenerate protobuf

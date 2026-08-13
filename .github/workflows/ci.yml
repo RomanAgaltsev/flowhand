@@ -20,6 +20,12 @@ jobs:
         with:
           version: latest
 
+      - name: Install go-arch-lint
+        run: go install github.com/fe3dback/go-arch-lint@latest
+
+      - name: Enforce layered architecture
+        run: go-arch-lint check
+
   vet-build-test:
     runs-on: ubuntu-latest
     steps:
