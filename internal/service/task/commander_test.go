@@ -74,7 +74,8 @@ func (f *fakeTx) WithinTx(ctx context.Context, fn func(context.Context) error) e
 }
 
 func newTestCommander(t *testing.T, repo *fakeTasksRepo, ob *fakeOutbox, tx *fakeTx,
-	id uuid.UUID, now time.Time) *Commander {
+	id uuid.UUID, now time.Time,
+) *Commander {
 	t.Helper()
 	c := NewCommander(repo, ob, tx)
 	c.now = func() time.Time { return now }

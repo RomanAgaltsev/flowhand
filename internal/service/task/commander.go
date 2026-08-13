@@ -12,12 +12,14 @@ import (
 	domaintasks "github.com/RomanAgaltsev/flowhand/internal/domain/tasks"
 )
 
+// SubmitCommand is SubmitCommand.
 type SubmitCommand struct {
 	Handler        string
 	Payload        json.RawMessage
 	IdempotencyKey string
 }
 
+// Commander is Commander.
 type Commander struct {
 	tasks  TasksRepo
 	outbox OutboxRepo
@@ -26,6 +28,7 @@ type Commander struct {
 	newID  func() (uuid.UUID, error)
 }
 
+// NewCommander creates new Commander.
 func NewCommander(tasks TasksRepo, outbox OutboxRepo, tx TxRunner) *Commander {
 	return &Commander{
 		tasks:  tasks,

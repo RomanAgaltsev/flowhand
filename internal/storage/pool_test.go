@@ -18,13 +18,15 @@ import (
 
 func TestPool_Ping(t *testing.T) {
 	ctx := context.Background()
-	pg, err := postgres.Run(ctx, "postgres:18-alpine",
+	pg, err := postgres.Run(
+		ctx, "postgres:18-alpine",
 		postgres.WithDatabase("flowhand"),
 		postgres.WithUsername("flowhand"),
 		postgres.WithPassword("flowhand"),
 		testcontainers.WithWaitStrategy(
 			wait.ForLog("database system is ready to accept connections").
-				WithOccurrence(2).WithStartupTimeout(60*time.Second)),
+				WithOccurrence(2).WithStartupTimeout(60*time.Second),
+		),
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = pg.Terminate(ctx) })
@@ -32,7 +34,8 @@ func TestPool_Ping(t *testing.T) {
 	dsn, err := pg.ConnectionString(ctx, "sslmode=disable")
 	require.NoError(t, err)
 
-	pool, err := storage.NewPool(ctx,
+	pool, err := storage.NewPool(
+		ctx,
 		config.DB{
 			DSN:      dsn,
 			MaxConns: 4,

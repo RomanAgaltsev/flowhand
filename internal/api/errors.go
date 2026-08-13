@@ -6,9 +6,10 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/RomanAgaltsev/flowhand/internal/api/oas"
 	"github.com/go-faster/jx"
 	"github.com/ogen-go/ogen/ogenerrors"
+
+	"github.com/RomanAgaltsev/flowhand/internal/api/oas"
 )
 
 // ErrorHandler renders ogen's pre-handler failures (body decode, parameter

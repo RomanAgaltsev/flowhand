@@ -16,7 +16,8 @@ import (
 
 // NewTracerProvider builds an OTel tracer provider that exports spans over OTLP/gRPC.
 func NewTracerProvider(ctx context.Context, cfg *config.Config) (*trace.TracerProvider, error) {
-	traceExporter, err := otlptracegrpc.New(ctx,
+	traceExporter, err := otlptracegrpc.New(
+		ctx,
 		otlptracegrpc.WithEndpoint(cfg.Obs.OTLPEndpoint),
 		otlptracegrpc.WithInsecure(),
 	)
@@ -48,7 +49,8 @@ func NewTracerProvider(ctx context.Context, cfg *config.Config) (*trace.TracerPr
 	}
 
 	traceProvider := trace.NewTracerProvider(
-		trace.WithBatcher(traceExporter,
+		trace.WithBatcher(
+			traceExporter,
 			trace.WithBatchTimeout(time.Second),
 		),
 		trace.WithResource(res),

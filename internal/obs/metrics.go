@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/contrib/instrumentation/runtime"
 	"go.opentelemetry.io/otel/attribute"
 	otelprom "go.opentelemetry.io/otel/exporters/prometheus"
@@ -12,7 +13,6 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
 
 	"github.com/RomanAgaltsev/flowhand/internal/config"
-	"github.com/prometheus/client_golang/prometheus"
 )
 
 // NewMeterProvider builds an OTel meter provider that exports through the given

@@ -3,8 +3,9 @@ package txmgr
 import (
 	"context"
 
-	"github.com/RomanAgaltsev/flowhand/internal/repository"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/RomanAgaltsev/flowhand/internal/repository"
 )
 
 // Manager is the stub for now. It satisfies repository.Resolver and
@@ -18,14 +19,17 @@ type Manager struct {
 	pool *pgxpool.Pool
 }
 
+// New creates new Manager.
 func New(pool *pgxpool.Pool) *Manager {
 	return &Manager{pool: pool}
 }
 
+// Resolve resolves repository DBTX.
 func (m *Manager) Resolve(_ context.Context) repository.DBTX {
 	return m.pool
 }
 
+// WithinTx runs fn function.
 func (m *Manager) WithinTx(ctx context.Context, fn func(ctx context.Context) error) error {
 	return fn(ctx)
 }

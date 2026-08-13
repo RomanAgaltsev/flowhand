@@ -27,7 +27,8 @@ func Run(ctx context.Context, cfg *config.Config, h *api.Handler, reg *prometheu
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle("/", otelhttp.NewHandler(oasSrv, "flowhand.http",
+	mux.Handle("/", otelhttp.NewHandler(
+		oasSrv, "flowhand.http",
 		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
 			return r.Method + " " + r.URL.Path
 		}),

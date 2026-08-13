@@ -17,14 +17,17 @@ import (
 // uniqueViolation is Postgres SQLSTATE 23505.
 const uniqueViolation = "23505"
 
+// Repo is postgres repo.
 type Repo struct {
 	resolver repository.Resolver
 }
 
+// New creates new repo.
 func New(r repository.Resolver) *Repo {
 	return &Repo{resolver: r}
 }
 
+// Insert inserts new task into repo.
 func (r *Repo) Insert(ctx context.Context, t domaintasks.Task, idempotencyKey *string) error {
 	q := queries.New(r.resolver.Resolve(ctx))
 	if _, err := q.CreateTask(ctx, toRow(t, idempotencyKey)); err != nil {
@@ -37,6 +40,7 @@ func (r *Repo) Insert(ctx context.Context, t domaintasks.Task, idempotencyKey *s
 	return nil
 }
 
+// Get returns a task from repo by id.
 func (r *Repo) Get(ctx context.Context, id uuid.UUID) (domaintasks.Task, error) {
 	q := queries.New(r.resolver.Resolve(ctx))
 	row, err := q.GetTaskByID(ctx, id)
@@ -46,6 +50,7 @@ func (r *Repo) Get(ctx context.Context, id uuid.UUID) (domaintasks.Task, error) 
 	return toDomain(row), nil
 }
 
+// GetByIdempotencyKey returns a task from repo by idempotency key.
 func (r *Repo) GetByIdempotencyKey(ctx context.Context, key string) (domaintasks.Task, error) {
 	q := queries.New(r.resolver.Resolve(ctx))
 	row, err := q.GetTaskByIdempotencyKey(ctx, &key)

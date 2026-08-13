@@ -17,6 +17,7 @@ linters:
     - revive
     - unconvert
     - unparam
+    - depguard
 
   settings:
     errcheck:
@@ -30,6 +31,50 @@ linters:
         - name: if-return
         - name: range
         - name: errorf
+
+    depguard:
+      rules:
+        api-layer:
+          list-mode: lax
+          files:
+            - "**/internal/api/**/*.go"
+          deny:
+            - pkg: "github.com/jackc/pgx/v5"
+              desc: "API layer must not import pgx; depend on service interfaces"
+            - pkg: "github.com/jackc/pgx/v5/pgxpool"
+              desc: "API layer must not import pgxpool"
+            - pkg: "github.com/RomanAgaltsev/flowhand/internal/storage/queries"
+              desc: "API layer must not import sqlc; go through service"
+            - pkg: "github.com/RomanAgaltsev/flowhand/internal/repository/..."
+              desc: "API layer must not import repositories; go through service"
+        service-layer:
+          list-mode: lax
+          files:
+            - "**/internal/service/**/*.go"
+          deny:
+            - pkg: "github.com/jackc/pgx/v5"
+              desc: "Service must not import pgx; use TxRunner + repository ports"
+            - pkg: "github.com/RomanAgaltsev/flowhand/internal/storage/queries"
+              desc: "Service must not import sqlc"
+        domain-layer:
+          list-mode: lax
+          files:
+            - "**/internal/domain/**/*.go"
+          deny:
+            - pkg: "github.com/jackc/pgx/v5"
+            - pkg: "github.com/RomanAgaltsev/flowhand/internal/repository/..."
+            - pkg: "github.com/RomanAgaltsev/flowhand/internal/api/..."
+            - pkg: "github.com/RomanAgaltsev/flowhand/internal/service/..."
+            - pkg: "github.com/RomanAgaltsev/flowhand/internal/storage/..."
+            - pkg: "github.com/RomanAgaltsev/flowhand/internal/client/..."
+        tx-isolation:
+          list-mode: lax
+          files:
+            - "!**/internal/storage/**"
+            - "!**/internal/repository/**"
+          deny:
+            - pkg: "github.com/jackc/pgx/v5"
+              desc: "pgx may only be imported by storage and repository layers"
 
   exclusions:
     rules:

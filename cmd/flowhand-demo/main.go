@@ -128,7 +128,7 @@ loop:
 	return nil
 }
 
-func envOr(env string, def string) string {
+func envOr(env, def string) string {
 	e := os.Getenv(env)
 	if e == "" {
 		return def

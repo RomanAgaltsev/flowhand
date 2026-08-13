@@ -53,7 +53,8 @@ func TestErrorEnvelopes_OnTheWire(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req, err := http.NewRequestWithContext(
-				context.Background(), tt.method, ts.URL+tt.path, strings.NewReader(tt.body))
+				context.Background(), tt.method, ts.URL+tt.path, strings.NewReader(tt.body),
+			)
 			require.NoError(t, err)
 			req.Header.Set("Content-Type", "application/json")
 

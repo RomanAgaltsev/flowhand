@@ -95,7 +95,8 @@ func Load(path string, flags *pflag.FlagSet) (*Config, error) {
 
 	// 4. Flags (highest precedence), supplied by cobra in Task 8.
 	if flags != nil {
-		if err := k.Load(posflag.ProviderWithValue(flags, ".", k,
+		if err := k.Load(posflag.ProviderWithValue(
+			flags, ".", k,
 			func(key, value string) (string, any) {
 				key = strings.ReplaceAll(key, "-", "_")
 				m := map[string]string{

@@ -3,8 +3,9 @@ package tasks
 import (
 	"time"
 
-	"github.com/RomanAgaltsev/flowhand/internal/domain"
 	"github.com/google/uuid"
+
+	"github.com/RomanAgaltsev/flowhand/internal/domain"
 )
 
 // Submitted is emitted when a task enters the system. The name suffix is the
@@ -18,6 +19,7 @@ type Submitted struct {
 // compile-time proof the aggregate's events satisfy the domain contract.
 var _ domain.Event = Submitted{}
 
+// NewSubmitted creates new submitted task.
 func NewSubmitted(t Task, now time.Time) Submitted {
 	return Submitted{
 		TaskID:    t.ID(),
@@ -26,5 +28,8 @@ func NewSubmitted(t Task, now time.Time) Submitted {
 	}
 }
 
-func (e Submitted) EventName() string    { return "task.submitted.v1" }
+// EventName returns event name.
+func (e Submitted) EventName() string { return "task.submitted.v1" }
+
+// OccuredAt returns time of event ocurrence.
 func (e Submitted) OccuredAt() time.Time { return e.ocurredAt }

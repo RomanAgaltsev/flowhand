@@ -16,13 +16,23 @@ type Task struct {
 	createdAt time.Time
 }
 
+// Status is the status of a task.
 type Status string
 
 const (
-	StatusPending  Status = "pending"
-	StatusRunning  Status = "running"
+	// StatusPending is "pending".
+	StatusPending Status = "pending"
+
+	// StatusRunning is "running".
+	StatusRunning Status = "running"
+
+	// StatusComplete is "complete".
 	StatusComplete Status = "complete"
-	StatusFailed   Status = "failed"
+
+	// StatusFailed is "failed".
+	StatusFailed Status = "failed"
+
+	// StatusCanceled is "canceled".
 	StatusCanceled Status = "canceled"
 )
 
@@ -37,8 +47,17 @@ func Submit(id uuid.UUID, handler string, payload json.RawMessage, now time.Time
 	}
 }
 
-func (t Task) ID() uuid.UUID            { return t.id }
-func (t Task) Status() Status           { return t.status }
-func (t Task) Handler() string          { return t.handler }
+// ID returns tasks id.
+func (t Task) ID() uuid.UUID { return t.id }
+
+// Status returns tasks status.
+func (t Task) Status() Status { return t.status }
+
+// Handler returns tasks handler.
+func (t Task) Handler() string { return t.handler }
+
+// Payload returns tasks payload.
 func (t Task) Payload() json.RawMessage { return t.payload }
-func (t Task) CreatedAt() time.Time     { return t.createdAt }
+
+// CreatedAt returns tasks createdAt.
+func (t Task) CreatedAt() time.Time { return t.createdAt }

@@ -8,19 +8,22 @@ import (
 )
 
 // TaskView is the read-side projection - denormalized, transport-friendly.
-type TaskView struct {
+type TaskView struct { //nolint:revive
 	ID        uuid.UUID
 	Status    string
 	Handler   string
 	CreatedAt time.Time
 }
 
+// Querier is Querier.
 type Querier struct {
 	tasks TasksRepo
 }
 
+// NewQuerier creates new Querier.
 func NewQuerier(tasks TasksRepo) *Querier { return &Querier{tasks: tasks} }
 
+// Get returns a TaskView.
 func (q *Querier) Get(ctx context.Context, id uuid.UUID) (TaskView, error) {
 	row, err := q.tasks.Get(ctx, id)
 	if err != nil {
