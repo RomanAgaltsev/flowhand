@@ -8,6 +8,10 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Every job below runs the SAME pinned tool versions the Taskfile installs into
+# ./bin, and reaches them through the same `task` targets a developer runs
+# locally. Letting CI resolve `@latest` independently is how local-green /
+# CI-red divergence starts.
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -16,15 +20,21 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - uses: golangci/golangci-lint-action@v9
+          cache: true
+      - uses: arduino/setup-task@v2
+
+      # go-arch-lint builds from source and drags in a large transitive tree
+      # (d2 and friends), so cache ./bin across runs. Without this the lint job
+      # spends ~2 minutes re-downloading it and is exposed to sum.golang.org
+      # flakes on every single run - which is exactly how this job failed.
+      - name: Cache pinned tool binaries
+        uses: actions/cache@v4
         with:
-          version: latest
+          path: bin
+          key: tools-${{ runner.os }}-${{ hashFiles('Taskfile.yml') }}
 
-      - name: Install go-arch-lint
-        run: go install github.com/fe3dback/go-arch-lint@v1.17.0
-
-      - name: Enforce layered architecture
-        run: go-arch-lint check
+      - run: task lint
+      - run: task lint:arch
 
   vet-build-test:
     runs-on: ubuntu-latest
@@ -46,5 +56,6 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
-      - run: govulncheck ./...
+          cache: true
+      - uses: arduino/setup-task@v2
+      - run: task vuln
