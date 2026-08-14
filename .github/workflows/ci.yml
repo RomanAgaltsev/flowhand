@@ -49,6 +49,25 @@ jobs:
       - run: task build
       - run: task test
 
+  # Kept separate from vet-build-test so a container/Docker failure is
+  # distinguishable from a unit-test failure at a glance, and so the two run in
+  # parallel. No `services:` block on purpose: the tests own their database
+  # lifecycle through testcontainers (internal/repository/tasks/postgres_integration_test.go),
+  # which needs a Docker daemon - already present on ubuntu-latest - not a
+  # pre-provisioned Postgres. Before this job existed, `-tags=integration` lived
+  # only in the Taskfile and no CI job ever passed it, so these tests had never
+  # run in CI at all.
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: arduino/setup-task@v2
+      - run: task test:int
+
   vuln:
     runs-on: ubuntu-latest
     steps:
