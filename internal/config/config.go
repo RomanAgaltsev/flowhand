@@ -60,7 +60,7 @@ func Load(path string, flags *pflag.FlagSet) (*Config, error) {
 		"db.dsn":                "",
 		"db.max_conns":          10,
 		"db.min_conns":          2,
-		"db.max_conn_lifetime":  0,
+		"db.max_conn_lifetime":  "1h", // never 0: pgxpool reads that as "expire immediately"
 		"obs.log_level":         "info",
 		"obs.log_format":        "json",
 		"obs.otlp_endpoint":     "localhost:4317",
