@@ -2,6 +2,12 @@ module github.com/RomanAgaltsev/flowhand
 
 go 1.26
 
+// Pinned, not floating: `go 1.26` alone lets setup-go reuse whatever patch the
+// runner happens to preinstall, which is how the job sat on 1.26.5 after
+// 1.26.6 shipped the fixes for GO-2026-5972 and six sibling stdlib advisories.
+// Bump this when `task vuln` reports a stdlib finding.
+toolchain go1.26.6
+
 require (
 	github.com/exaring/otelpgx v0.11.1
 	github.com/go-faster/errors v0.7.1
