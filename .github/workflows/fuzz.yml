@@ -1,0 +1,39 @@
+name: fuzz
+on:
+  schedule:
+    - cron: "0 6 * * *" # daily at 06:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      # Hand-maintained: add every new fuzz target here or CI will not run it.
+      # `task fuzz` discovers targets dynamically, so this list duplicates that
+      # logic. When the second target lands, unify instead of extending: split
+      # the Taskfile into fuzz:list / fuzz:one, have a discover job feed this
+      # matrix from `task fuzz:list`, and run `task fuzz:one` below.
+      matrix:
+        include:
+          - target: FuzzCreateTaskRequest
+            package: ./internal/api
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test -run='^$' -fuzz="^${{ matrix.target }}$" -fuzztime=5m ${{ matrix.package }}
+      - name: upload crashers
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: crashers-${{ matrix.target }}
+          path: ${{ matrix.package }}/testdata/fuzz/${{ matrix.target }}/
+          if-no-files-found: ignore
+          retention-days: 30

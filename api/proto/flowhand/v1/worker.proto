@@ -1,0 +1,8 @@
+syntax = "proto3";
+
+package flowhand.v1;
+
+option go_package = "github.com/RomanAgaltsev/flowhand/api/proto/gen/flowhand/v1;flowhandv1";
+
+// WorkerService will host streaming RPCs between server and workers.
+service WorkerService {}

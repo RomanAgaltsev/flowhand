@@ -1,0 +1,80 @@
+name: ci
+
+on:
+  push: { branches: [main] }
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Every job below runs the SAME pinned tool versions the Taskfile installs into
+# ./bin, and reaches them through the same `task` targets a developer runs
+# locally. Letting CI resolve `@latest` independently is how local-green /
+# CI-red divergence starts.
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: arduino/setup-task@v2
+
+      # go-arch-lint builds from source and drags in a large transitive tree
+      # (d2 and friends), so cache ./bin across runs. Without this the lint job
+      # spends ~2 minutes re-downloading it and is exposed to sum.golang.org
+      # flakes on every single run - which is exactly how this job failed.
+      - name: Cache pinned tool binaries
+        uses: actions/cache@v4
+        with:
+          path: bin
+          key: tools-${{ runner.os }}-${{ hashFiles('Taskfile.yml') }}
+
+      - run: task lint
+      - run: task lint:arch
+
+  vet-build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: arduino/setup-task@v2
+      - run: go vet ./...
+      - run: task build
+      - run: task test
+
+  # Kept separate from vet-build-test so a container/Docker failure is
+  # distinguishable from a unit-test failure at a glance, and so the two run in
+  # parallel. No `services:` block on purpose: the tests own their database
+  # lifecycle through testcontainers (internal/repository/tasks/postgres_integration_test.go),
+  # which needs a Docker daemon - already present on ubuntu-latest - not a
+  # pre-provisioned Postgres. Before this job existed, `-tags=integration` lived
+  # only in the Taskfile and no CI job ever passed it, so these tests had never
+  # run in CI at all.
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: arduino/setup-task@v2
+      - run: task test:int
+
+  vuln:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: arduino/setup-task@v2
+      - run: task vuln

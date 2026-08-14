@@ -1,0 +1,96 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - contextcheck
+    - errorlint
+    - gocritic
+    - gosec
+    - nilerr
+    - noctx
+    - revive
+    - unconvert
+    - unparam
+    - depguard
+
+  settings:
+    errcheck:
+      check-blank: true
+    revive:
+      rules:
+        - name: var-naming
+        - name: exported
+        - name: error-return
+        - name: error-naming
+        - name: if-return
+        - name: range
+        - name: errorf
+
+    depguard:
+      rules:
+        api-layer:
+          list-mode: lax
+          files:
+            - "**/internal/api/**/*.go"
+          deny:
+            - pkg: "github.com/jackc/pgx/v5"
+              desc: "API layer must not import pgx; depend on service interfaces"
+            - pkg: "github.com/jackc/pgx/v5/pgxpool"
+              desc: "API layer must not import pgxpool"
+            - pkg: "github.com/RomanAgaltsev/flowhand/internal/storage/queries"
+              desc: "API layer must not import sqlc; go through service"
+            - pkg: "github.com/RomanAgaltsev/flowhand/internal/repository/..."
+              desc: "API layer must not import repositories; go through service"
+        service-layer:
+          list-mode: lax
+          files:
+            - "**/internal/service/**/*.go"
+          deny:
+            - pkg: "github.com/jackc/pgx/v5"
+              desc: "Service must not import pgx; use TxRunner + repository ports"
+            - pkg: "github.com/RomanAgaltsev/flowhand/internal/storage/queries"
+              desc: "Service must not import sqlc"
+        domain-layer:
+          list-mode: lax
+          files:
+            - "**/internal/domain/**/*.go"
+          deny:
+            - pkg: "github.com/jackc/pgx/v5"
+            - pkg: "github.com/RomanAgaltsev/flowhand/internal/repository/..."
+            - pkg: "github.com/RomanAgaltsev/flowhand/internal/api/..."
+            - pkg: "github.com/RomanAgaltsev/flowhand/internal/service/..."
+            - pkg: "github.com/RomanAgaltsev/flowhand/internal/storage/..."
+            - pkg: "github.com/RomanAgaltsev/flowhand/internal/client/..."
+        tx-isolation:
+          list-mode: lax
+          files:
+            - "!**/internal/storage/**"
+            - "!**/internal/repository/**"
+          deny:
+            - pkg: "github.com/jackc/pgx/v5"
+              desc: "pgx may only be imported by storage and repository layers"
+
+  exclusions:
+    rules:
+      # G116 (Trojan Source) is reported at file scope, so the inline nolint on
+      # the offending seed cannot reach it. The bidi control char is a
+      # deliberate adversarial fuzz seed.
+      - path: internal/api/validator_test.go
+        text: G116
+        linters:
+          - gosec
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports

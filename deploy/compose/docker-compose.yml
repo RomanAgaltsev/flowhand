@@ -1,0 +1,248 @@
+name: flowhand-dev
+
+volumes:
+  pg-data:
+  redis-data:
+  etcd-data:
+  kafka-data:
+  seaweedfs-data:
+  grafana-data:
+  prometheus-data:
+  tempo-data:
+  loki-data:
+
+networks:
+  flowhand:
+    driver: bridge
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: flowhand
+      POSTGRES_PASSWORD: flowhand
+      POSTGRES_DB: flowhand
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - pg_stat_statements.track=all
+    ports: ["5432:5432"]
+    volumes:
+      - pg-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flowhand"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+    networks: [flowhand]
+
+  redis:
+    image: redis:8-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports: ["6379:6379"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+    networks: [flowhand]
+
+  etcd:
+    image: quay.io/coreos/etcd:v3.6.12
+    command:
+      - /usr/local/bin/etcd
+      - --name=etcd-0
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd:2379
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-advertise-peer-urls=http://etcd:2380
+      - --initial-cluster=etcd-0=http://etcd:2380
+      - --initial-cluster-token=flowhand
+      - --initial-cluster-state=new
+    ports: ["2379:2379"]
+    volumes:
+      - etcd-data:/etcd-data
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+    networks: [flowhand]
+
+  kafka:
+    image: confluentinc/cp-kafka:8.2.2
+    environment:
+      KAFKA_NODE_ID: "0"
+      KAFKA_PROCESS_ROLES: "controller,broker"
+      KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093,PLAINTEXT_HOST://:29092"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "0@kafka:9093"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      CLUSTER_ID: "MkU3OEVGRkI3QzJFREI2NDE2NDg0NTI1Ng"
+    volumes:
+      - kafka-data:/tmp/kraft-combined-logs
+    ports: ["9092:9092", "29092:29092"]
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "kafka-topics --bootstrap-server localhost:9092 --list || exit 1",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    networks: [flowhand]
+
+  seaweedfs:
+    image: chrislusf/seaweedfs:3.68
+    command: >
+      server -dir=/data -ip=seaweedfs
+      -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json
+    volumes:
+      - seaweedfs-data:/data
+      - ./seaweedfs-s3.json:/etc/seaweedfs/s3.json:ro
+    ports:
+      - "8333:8333" # S3 API gateway — the aws-sdk-go-v2 endpoint
+      - "9333:9333" # master UI
+      - "8888:8888" # filer UI
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -q -O- http://localhost:9333/cluster/healthz || exit 1",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    networks: [flowhand]
+
+  prometheus:
+    image: prom/prometheus:v3.12.0
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--web.external-url=/prometheus"
+      - "--web.route-prefix=/prometheus"
+      - "--enable-feature=exemplar-storage"
+    ports:
+      - "9090:9090"
+    networks: [flowhand]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:9090/prometheus/-/healthy || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  tempo:
+    image: grafana/tempo:2.10.7
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    volumes:
+      - ./tempo/tempo.yml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "3200:3200" # Tempo API
+      - "4317:4317" # OTLP gRPC
+      - "4318:4318" # OTLP HTTP
+    networks: [flowhand]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:3200/ready || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  loki:
+    image: grafana/loki:3.4.2
+    command: ["-config.file=/etc/loki/loki.yaml"]
+    volumes:
+      - ./loki/loki.yml:/etc/loki/loki.yaml:ro
+      - loki-data:/loki
+    ports:
+      - "3100:3100"
+    networks: [flowhand]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:3100/ready || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  promtail:
+    image: grafana/promtail:3.6.11
+    command: ["-config.file=/etc/promtail/promtail.yaml"]
+    volumes:
+      - ./promtail/promtail.yml:/etc/promtail/promtail.yaml
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ../../.logs:/var/log/flowhand:ro
+    depends_on:
+      loki: { condition: service_healthy }
+    networks: [flowhand]
+
+  pyroscope:
+    image: grafana/pyroscope:1.16.0   # pin, like every other service here
+    command: ["-config.file=/etc/pyroscope/config.yaml"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # or the scrape target never resolves on Linux
+    volumes:
+      - ./pyroscope/config.yml:/etc/pyroscope/config.yaml:ro
+    ports: ["4040:4040"]
+    networks: [flowhand]
+
+  grafana:
+    image: grafana/grafana:13.0.3
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+      GF_FEATURE_TOGGLES_ENABLE: "traceqlEditor tracesEmbeddedFlameGraph"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    ports: ["3000:3000"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:3000/api/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    depends_on:
+      prometheus: { condition: service_healthy }
+      tempo:      { condition: service_healthy }
+      loki:       { condition: service_healthy }
+    networks: [flowhand]
+
+  flowhand-demo:
+    image: flowhand-demo:dev
+    build: { context: ../.., dockerfile: cmd/flowhand-demo/Dockerfile }
+    environment:
+      - FLOWHAND_URL=http://host.docker.internal:8080
+      - DEMO_INTERVAL=1s
+      - DEMO_METRICS_ADDR=:8081
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    networks: [flowhand]
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: flowhand-alertmanager
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    ports:
+      - "9093:9093"
+    networks:
+      - flowhand
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:9093/-/healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 5

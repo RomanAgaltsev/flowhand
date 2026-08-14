@@ -1,0 +1,4 @@
+http:
+  addr: ":8080"
+db:
+  dsn: "postgres://flowhand:flowhand@localhost:5432/flowhand?sslmode=disable"

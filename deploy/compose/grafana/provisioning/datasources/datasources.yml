@@ -1,0 +1,43 @@
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    access: proxy
+    url: http://prometheus:9090/prometheus
+    isDefault: true
+  - name: Tempo
+    type: tempo
+    uid: tempo
+    access: proxy
+    url: http://tempo:3200
+    jsonData:
+      tracesToLogsV2:
+        datasourceUid: loki
+        filterByTraceID: true
+      tracesToMetrics:
+        datasourceUid: prometheus
+  - name: Loki
+    type: loki
+    uid: loki
+    access: proxy
+    url: http://loki:3100
+    jsonData:
+      # Two matchers because the log format is configurable: slog's text handler
+      # writes `trace_id=abc`, its JSON handler (the default) writes
+      # `"trace_id":"abc"`. Matching only the text shape silently breaks the
+      # jump-to-trace link for anyone running with the default format.
+      derivedFields:
+        - name: trace_id
+          matcherRegex: "trace_id=(\\w+)"
+          url: "$${__value.raw}"
+          datasourceUid: tempo
+        - name: trace_id_json
+          matcherRegex: '"trace_id":"(\w+)"'
+          url: "$${__value.raw}"
+          datasourceUid: tempo
+  - name: Pyroscope
+    type: pyroscope
+    uid: pyroscope
+    access: proxy
+    url: http://pyroscope:4040

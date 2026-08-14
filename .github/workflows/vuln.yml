@@ -1,0 +1,57 @@
+name: vuln-scheduled
+
+# The `vuln` job in ci.yml only runs on push and pull_request, which cannot
+# catch the case that has now bitten this repo twice: an advisory published
+# against a dependency - or the toolchain - that has not changed. No commit
+# triggers it, so no pre-merge gate and no branch-protection rule can see it.
+# GO-2026-6061 (2026-08-12) and the seven stdlib advisories fixed in go1.26.6
+# (2026-08-14) were both found only because someone happened to push.
+on:
+  schedule:
+    - cron: "0 7 * * *" # daily at 07:00 UTC, an hour after fuzz
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write # a red scheduled run nobody reads is the bug this workflow fixes
+
+jobs:
+  vuln:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: arduino/setup-task@v2
+      - run: task vuln
+
+      # A scheduled workflow reports failure only in the Actions tab, which is
+      # precisely the "check that fails where nobody looks" pattern this project
+      # already got caught by. File an issue so the failure arrives somewhere
+      # with notifications attached.
+      - name: file an issue when the scan fails
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          open=$(gh issue list --state open --search 'in:title govulncheck' --json number --jq 'length')
+          if [ "$open" -gt 0 ]; then
+            echo "an open govulncheck issue already exists; not filing another"
+            exit 0
+          fi
+          gh issue create \
+            --title "govulncheck: scheduled scan is failing" \
+            --body "The daily \`vuln-scheduled\` run failed: $RUN_URL
+
+          Nothing in this repository necessarily changed - a scheduled scan fails when an
+          advisory is published against an existing dependency or against the pinned Go
+          toolchain in \`go.mod\`.
+
+          Reproduce with \`task vuln\`. If the finding is in the standard library, bump the
+          \`toolchain\` directive in \`go.mod\` to the patch release named in the report.
+
+          This issue is filed once and reused; close it when the scan is green again."

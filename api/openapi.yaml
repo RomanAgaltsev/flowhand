@@ -1,0 +1,100 @@
+openapi: 3.1.1
+info:
+  title: flowhand
+  version: 0.1.0
+  description: Task and workflow orchestration.
+servers:
+  - url: http://localhost:8080
+paths:
+  /v1/tasks:
+    post:
+      operationId: createTask
+      summary: Submit a task
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateTaskRequest" }
+      responses:
+        "201":
+          description: Task accepted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "400":
+          description: Invalid input
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /v1/tasks/{id}:
+    get:
+      operationId: getTask
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Task state
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+components:
+  schemas:
+    CreateTaskRequest:
+      type: object
+      required: [handler]
+      properties:
+        handler:
+          type: string
+          minLength: 1
+          maxLength: 128
+        payload:
+          type: object
+          additionalProperties: true
+        idempotency_key:
+          type: string
+          minLength: 1
+          maxLength: 128
+    Task:
+      type: object
+      required: [id, status, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [pending, running, succeeded, failed, cancelled]
+        created_at: { type: string, format: date-time }
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: >
+            Stable machine-readable error symbol. Clients should branch on this,
+            never on `message`, which is human-facing and may change.
+          enum: [invalid_request_body, invalid_parameter, task_not_found, internal_error]
+        message:
+          type: string
+          description: >
+            Human-facing detail. For 4xx it names what about the request was
+            wrong; for 5xx it stays deliberately opaque so server internals
+            never reach the wire.

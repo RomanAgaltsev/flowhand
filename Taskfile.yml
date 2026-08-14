@@ -1,0 +1,272 @@
+version: "3"
+
+vars:
+  GO_VERSION: '1.26.5'
+  GOLANGCI_LINT_VERSION: 'v2.12.2'
+  GCI_VERSION: 'v0.14.0'
+  GOFUMPT_VERSION: 'v0.10.0'
+  BUF_VERSION: '1.71.0'
+  PROTOC_GEN_GO_VERSION: 'v1.36.11'
+  PROTOC_GEN_GO_GRPC_VERSION: 'v1.6.1'
+  OGEN_VERSION: 'v1.23.0'
+  GOOSE_VERSION: 'v3.27.2'
+  SQLC_VERSION: 'v1.31.1'
+  GOVULNCHECK_VERSION: 'v1.1.4'
+  GO_ARCH_LINT_VERSION: 'v1.17.0'
+
+  BIN_DIR: '{{.ROOT_DIR | replace "\\" "/"}}/bin'
+  EXE_EXT: '{{if eq OS "windows"}}.exe{{end}}'
+  GOLANGCI_LINT: '{{.BIN_DIR}}/golangci-lint{{.EXE_EXT}}'
+  GCI: '{{.BIN_DIR}}/gci{{.EXE_EXT}}'
+  GOFUMPT: '{{.BIN_DIR}}/gofumpt{{.EXE_EXT}}'
+  BUF: '{{.BIN_DIR}}/buf{{.EXE_EXT}}'
+  PROTOC_GEN_GO: '{{.BIN_DIR}}/protoc-gen-go{{.EXE_EXT}}'
+  PROTOC_GEN_GO_GRPC: '{{.BIN_DIR}}/protoc-gen-go-grpc{{.EXE_EXT}}'
+  OGEN: '{{.BIN_DIR}}/ogen{{.EXE_EXT}}'
+  GOOSE: '{{.BIN_DIR}}/goose{{.EXE_EXT}}'
+  SQLC: '{{.BIN_DIR}}/sqlc{{.EXE_EXT}}'
+  GOVULNCHECK: '{{.BIN_DIR}}/govulncheck{{.EXE_EXT}}'
+  GO_ARCH_LINT: '{{.BIN_DIR}}/go-arch-lint{{.EXE_EXT}}'
+
+
+  MODULE: github.com/RomanAgaltsev/flowhand
+  BIN: bin/flowhand{{.EXE_EXT}}
+  COMPOSE_FILE: deploy/compose/docker-compose.yml
+
+tasks:
+  formatters:install:
+    desc: install gofumpt and gci
+    cmds:
+      - echo 'installing gofumpt...'
+      - GOBIN={{.BIN_DIR}} go install mvdan.cc/gofumpt@{{.GOFUMPT_VERSION}}
+      - echo 'installing gci...'
+      - GOBIN={{.BIN_DIR}} go install github.com/daixiang0/gci@{{.GCI_VERSION}}
+    status:
+      - ls {{.GOFUMPT}} >/dev/null 2>&1
+      - ls {{.GCI}} >/dev/null 2>&1
+
+  golangci-lint:install:
+    desc: install golangci-lint
+    cmds:
+      - echo 'installing golangci-lint...'
+      - GOBIN={{.BIN_DIR}} go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@{{.GOLANGCI_LINT_VERSION}}
+    status:
+      - ls {{.GOLANGCI_LINT}} >/dev/null 2>&1
+
+  go-arch-lint:install:
+    desc: install go-arch-lint
+    cmds:
+      - echo 'installing go-arch-lint...'
+      - GOBIN={{.BIN_DIR}} go install github.com/fe3dback/go-arch-lint@{{.GO_ARCH_LINT_VERSION}}
+    status:
+      - ls {{.GO_ARCH_LINT}} >/dev/null 2>&1
+
+  govulncheck:install:
+    cmds: ['GOBIN={{.BIN_DIR}} go install golang.org/x/vuln/cmd/govulncheck@{{.GOVULNCHECK_VERSION}}']
+    status: ['ls {{.GOVULNCHECK}} >/dev/null 2>&1']
+
+  buf:install:
+    desc: install buf
+    cmds:
+      - echo 'installing buf...'
+      - GOBIN={{.BIN_DIR}} go install github.com/bufbuild/buf/cmd/buf@v{{.BUF_VERSION}}
+    status:
+      - ls {{.BUF}} >/dev/null 2>&1
+
+  proto:install-plugins:
+    desc: install protoc-plugins
+    cmds:
+      - echo 'installing protoc-gen-go...'
+      - GOBIN={{.BIN_DIR}} go install google.golang.org/protobuf/cmd/protoc-gen-go@{{.PROTOC_GEN_GO_VERSION}}
+      - echo 'installing protoc-gen-go-grpc...'
+      - GOBIN={{.BIN_DIR}} go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@{{.PROTOC_GEN_GO_GRPC_VERSION}}
+    status:
+      - ls {{.PROTOC_GEN_GO}} >/dev/null 2>&1
+      - ls {{.PROTOC_GEN_GO_GRPC}} >/dev/null 2>&1
+
+  ogen:install:
+    desc: install ogen
+    cmds:
+      - echo 'installing ogen...'
+      - GOBIN={{.BIN_DIR}} go install github.com/ogen-go/ogen/cmd/ogen@{{.OGEN_VERSION}}
+    status:
+      - ls {{.OGEN}} >/dev/null 2>&1
+
+  goose:install:
+    desc: install goose
+    cmds:
+      - echo 'installing goose...'
+      - GOBIN={{.BIN_DIR}} go install github.com/pressly/goose/v3/cmd/goose@{{.GOOSE_VERSION}}
+    status:
+      - test -x {{.GOOSE}}
+
+  sqlc:install:
+    desc: install sqlc
+    cmds:
+      - echo 'installing sqlc...'
+      - GOBIN={{.BIN_DIR}} go install github.com/sqlc-dev/sqlc/cmd/sqlc@{{.SQLC_VERSION}}
+
+  setup:
+    desc: install all tools
+    deps: [formatters:install, golangci-lint:install, buf:install, proto:install-plugins, ogen:install, goose:install, sqlc:install, go-arch-lint:install]
+
+  format:
+    desc: format code (gofumpt + gci)
+    deps: [formatters:install]
+    cmds:
+      - echo 'formatting code with gofumpt...'
+      - bash -c "find . -type f -name '*.go' ! -path '*/mocks/*' ! -path '*/pkg/proto/*' ! -path '*/pkg/openapi/*' -exec {{.GOFUMPT}} -extra -w {} +"
+      - echo 'sorting imports with gci...'
+      - bash -c "find . -type f -name '*.go' ! -path '*/mocks/*' ! -path '*/pkg/proto/*' ! -path '*/pkg/openapi/*' -exec {{.GCI}} write -s standard -s default -s 'prefix(github.com/RomanAgaltsev/flowhand)' {} +"
+
+  lint:
+    desc: run golangci-lint
+    deps: [golangci-lint:install]
+    cmds:
+      - '{{.GOLANGCI_LINT}} run --allow-parallel-runners ./... --config=.golangci.yml'
+
+  lint:arch:
+      desc: Enforce layered architecture (go-arch-lint)
+      deps: [go-arch-lint:install]
+      cmds:
+        - '{{.GO_ARCH_LINT}} check'
+
+  proto:gen:
+    desc: regenerate protobuf
+    deps: [buf:install, proto:install-plugins]
+    sources: ['api/proto/**/*.proto', 'buf.yaml', 'buf.gen.yaml']
+    generates: ['api/proto/gen/**/*.go']
+    cmds:
+      - echo 'generating Go-code from .proto...'
+      - '{{.BUF}} lint'
+      - '{{.BUF}} generate'
+
+  ogen:gen:
+    desc: regenerate ogen server code
+    sources: ['api/openapi.yaml']
+    generates: ['internal/api/oas/*.go']
+    deps: [ogen:install]
+    cmds:
+      - echo 'generating ogen server code from OpenAPI...'
+      - '{{.OGEN}} --target internal/api/oas --package oas --clean api/openapi.yaml'
+
+  sqlc:gen:
+    desc: generate code with sqlc
+    deps: [sqlc:install]
+    cmds:
+      - '{{.SQLC}} generate'
+
+  gen:
+    desc: generate all code
+    cmds:
+      - task: proto:gen
+      - task: ogen:gen
+      - task: sqlc:gen
+
+  deps:update:
+    desc: update and tidy dependencies
+    cmds:
+      - go get -u ./...
+      - go mod tidy -compat={{.GO_VERSION}}
+
+  default:
+    desc: list tasks
+    cmds:
+      - task --list
+
+  build:
+    desc: build flowhand binary
+    vars:
+      VERSION:
+        sh: git describe --tags --always --dirty 2>/dev/null || echo dev
+      COMMIT:
+        sh: git rev-parse --short HEAD 2>/dev/null || echo none
+      DATE:
+        sh: date -u +%Y-%m-%dT%H:%M:%SZ
+    cmds:
+      - >-
+        go build
+        -ldflags "-X github.com/RomanAgaltsev/flowhand/internal/cli.version={{.VERSION}}
+        -X github.com/RomanAgaltsev/flowhand/internal/cli.commit={{.COMMIT}}
+        -X github.com/RomanAgaltsev/flowhand/internal/cli.date={{.DATE}}"
+        -o {{.BIN}} ./cmd/flowhand
+
+  test:
+    desc: run unit tests with race detector
+    cmds:
+      - go test -race -count=1 ./...
+
+  test:int:
+    desc: run integration tests (requires Docker)
+    cmds:
+      - go test -race -tags=integration -count=1 ./...
+
+  fuzz:
+    desc: run each fuzz target for FUZZTIME (default 30s)
+    vars:
+      FUZZTIME: '{{.FUZZTIME | default "30s"}}'
+    silent: true
+    cmds:
+      # -fuzz rejects multiple packages and refuses to run when its regex
+      # matches more than one target, so every target gets its own invocation.
+      - cmd: |
+          found=0
+          for pkg in $(go list ./...); do
+            for name in $(go test -list='^Fuzz' "$pkg"); do
+              case "$name" in
+                Fuzz*)
+                  found=$((found + 1))
+                  echo "fuzzing $name in $pkg for {{.FUZZTIME}}..."
+                  go test -run='^$' -fuzz="^$name\$" -fuzztime={{.FUZZTIME}} "$pkg"
+                  ;;
+              esac
+            done
+          done
+          if [ "$found" -eq 0 ]; then
+            echo 'no fuzz targets found' >&2
+            exit 1
+          fi
+
+  vuln:
+    deps: [govulncheck:install]
+    cmds: ['{{.GOVULNCHECK}} ./...']
+
+  up:
+    desc: bring up dev stack
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} up -d
+
+  down:
+    desc: tear down dev stack
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} down -v
+
+  logs:
+    desc: tail dev stack logs
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} logs -f
+
+  run:server:
+    desc: run flowhand server locally (tee to .logs/ so promtail ships to Loki)
+    deps: [build]
+    cmds:
+      - mkdir -p .logs
+      - ./{{.BIN}} server 2>&1 | tee .logs/server.log
+
+  migrate:up:
+    desc: apply all migrations
+    deps: [goose:install]
+    cmds:
+      - '{{.GOOSE}} -dir migrations postgres "$FLOWHAND_DB_DSN" up'
+
+  migrate:down:
+    desc: roll back one migration
+    deps: [goose:install]
+    cmds:
+      - '{{.GOOSE}} -dir migrations postgres "$FLOWHAND_DB_DSN" down'
+
+  demo:
+    desc: launch the reference producer into a running stack
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} up -d --build flowhand-demo
+      - echo "submit rate - Grafana Explore, Prometheus datasource - rate(flowhand_demo_submits_total[1m])"
