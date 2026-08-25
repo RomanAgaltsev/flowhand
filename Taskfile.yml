@@ -2,9 +2,9 @@ version: "3"
 
 vars:
   GO_VERSION: '1.26.5'
-  GOLANGCI_LINT_VERSION: 'v2.12.2'
+  GOLANGCI_LINT_VERSION: 'v2.13.1'
   GCI_VERSION: 'v0.14.0'
-  GOFUMPT_VERSION: 'v0.10.0'
+  GOFUMPT_VERSION: 'v0.11.0'
   BUF_VERSION: '1.71.0'
   PROTOC_GEN_GO_VERSION: 'v1.36.11'
   PROTOC_GEN_GO_GRPC_VERSION: 'v1.6.1'
@@ -149,6 +149,7 @@ tasks:
     cmds:
       - echo 'generating ogen server code from OpenAPI...'
       - '{{.OGEN}} --target internal/api/oas --package oas --clean api/openapi.yaml'
+      - grep -q 'type TaskStatus string' internal/api/oas/oas_schemas_gen.go
 
   sqlc:gen:
     desc: generate code with sqlc
@@ -253,8 +254,11 @@ tasks:
       - mkdir -p .logs
       - ./{{.BIN}} server 2>&1 | tee .logs/server.log
 
+  # Single-developer path only. Deployments must run `flowhand migrate up`
+  # instead: only the binary takes the session-scoped advisory lock that stops
+  # two replicas racing each other — the goose CLI cannot.
   migrate:up:
-    desc: apply all migrations
+    desc: apply all migrations (dev only; deployments use `flowhand migrate up`)
     deps: [goose:install]
     cmds:
       - '{{.GOOSE}} -dir migrations postgres "$FLOWHAND_DB_DSN" up'
