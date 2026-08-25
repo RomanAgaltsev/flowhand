@@ -132,20 +132,18 @@ func TestGetTask_HappyPath(t *testing.T) {
 	assert.True(t, created.Equal(got.CreatedAt))
 }
 
-func TestGetTask_TranslatesDomainVocabulary(t *testing.T) {
-	// The domain says "complete"; the published spec says "succeeded". If this
-	// ever passes through untranslated, we are serving a contract violation.
+func TestGetTask_RejectsStatusOutsideThePublishedEnum(t *testing.T) {
+	// Domain, database and wire share one vocabulary, so the mapper is a rename
+	// rather than a translation. What still has to hold is that a status the spec
+	// does not publish never reaches a client: serving it would be a contract
+	// violation that ogen's own Validate() would not catch on the way out.
 	h := api.NewHandler(&fakeCommander{}, &fakeQuerier{view: task.TaskView{
-		ID: uuid.Must(uuid.NewV7()), Status: "complete", CreatedAt: time.Now().UTC(),
+		ID: uuid.Must(uuid.NewV7()), Status: "orphaned", CreatedAt: time.Now().UTC(),
 	}}, discardLogger())
 
-	resp, err := h.GetTask(context.Background(), oas.GetTaskParams{ID: uuid.Must(uuid.NewV7())})
-	require.NoError(t, err)
-
-	got, ok := resp.(*oas.Task)
-	require.True(t, ok)
-	assert.Equal(t, oas.TaskStatusSucceeded, got.Status)
-	require.NoError(t, got.Validate())
+	_, err := h.GetTask(context.Background(), oas.GetTaskParams{ID: uuid.Must(uuid.NewV7())})
+	require.Error(t, err, "an unpublished status must not be served as a Task")
+	assert.Contains(t, err.Error(), "orphaned")
 }
 
 func TestGetTask_NotFound(t *testing.T) {

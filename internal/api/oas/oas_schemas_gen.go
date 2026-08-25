@@ -255,7 +255,9 @@ func (o OptString) Or(d string) string {
 
 // Ref: #/components/schemas/Task
 type Task struct {
-	ID        uuid.UUID  `json:"id"`
+	ID uuid.UUID `json:"id"`
+	// Lifecycle state. `retry_scheduled` is a transient scheduler state surfaced for observability;
+	// `dead_lettered` is terminal.
 	Status    TaskStatus `json:"status"`
 	CreatedAt time.Time  `json:"created_at"`
 }
@@ -293,14 +295,18 @@ func (s *Task) SetCreatedAt(val time.Time) {
 func (*Task) createTaskRes() {}
 func (*Task) getTaskRes()    {}
 
+// Lifecycle state. `retry_scheduled` is a transient scheduler state surfaced for observability;
+// `dead_lettered` is terminal.
 type TaskStatus string
 
 const (
-	TaskStatusPending   TaskStatus = "pending"
-	TaskStatusRunning   TaskStatus = "running"
-	TaskStatusSucceeded TaskStatus = "succeeded"
-	TaskStatusFailed    TaskStatus = "failed"
-	TaskStatusCancelled TaskStatus = "cancelled"
+	TaskStatusPending        TaskStatus = "pending"
+	TaskStatusRunning        TaskStatus = "running"
+	TaskStatusRetryScheduled TaskStatus = "retry_scheduled"
+	TaskStatusSucceeded      TaskStatus = "succeeded"
+	TaskStatusFailed         TaskStatus = "failed"
+	TaskStatusCanceled       TaskStatus = "canceled"
+	TaskStatusDeadLettered   TaskStatus = "dead_lettered"
 )
 
 // AllValues returns all TaskStatus values.
@@ -308,9 +314,11 @@ func (TaskStatus) AllValues() []TaskStatus {
 	return []TaskStatus{
 		TaskStatusPending,
 		TaskStatusRunning,
+		TaskStatusRetryScheduled,
 		TaskStatusSucceeded,
 		TaskStatusFailed,
-		TaskStatusCancelled,
+		TaskStatusCanceled,
+		TaskStatusDeadLettered,
 	}
 }
 
@@ -321,11 +329,15 @@ func (s TaskStatus) MarshalText() ([]byte, error) {
 		return []byte(s), nil
 	case TaskStatusRunning:
 		return []byte(s), nil
+	case TaskStatusRetryScheduled:
+		return []byte(s), nil
 	case TaskStatusSucceeded:
 		return []byte(s), nil
 	case TaskStatusFailed:
 		return []byte(s), nil
-	case TaskStatusCancelled:
+	case TaskStatusCanceled:
+		return []byte(s), nil
+	case TaskStatusDeadLettered:
 		return []byte(s), nil
 	default:
 		return nil, errors.Errorf("invalid value: %q", s)
@@ -341,14 +353,20 @@ func (s *TaskStatus) UnmarshalText(data []byte) error {
 	case TaskStatusRunning:
 		*s = TaskStatusRunning
 		return nil
+	case TaskStatusRetryScheduled:
+		*s = TaskStatusRetryScheduled
+		return nil
 	case TaskStatusSucceeded:
 		*s = TaskStatusSucceeded
 		return nil
 	case TaskStatusFailed:
 		*s = TaskStatusFailed
 		return nil
-	case TaskStatusCancelled:
-		*s = TaskStatusCancelled
+	case TaskStatusCanceled:
+		*s = TaskStatusCanceled
+		return nil
+	case TaskStatusDeadLettered:
+		*s = TaskStatusDeadLettered
 		return nil
 	default:
 		return errors.Errorf("invalid value: %q", data)

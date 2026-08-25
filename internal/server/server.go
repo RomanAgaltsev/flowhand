@@ -18,7 +18,7 @@ import (
 	"github.com/RomanAgaltsev/flowhand/internal/config"
 )
 
-// Run serves the API, metrics and pprof endpoints until ctx is cancelled, then
+// Run serves the API, metrics and pprof endpoints until ctx is canceled, then
 // gracefully shuts the server down.
 func Run(ctx context.Context, cfg *config.Config, h *api.Handler, reg *prometheus.Registry) error {
 	oasSrv, err := oas.NewServer(h, oas.WithErrorHandler(api.ErrorHandler))

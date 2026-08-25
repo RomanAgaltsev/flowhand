@@ -26,14 +26,20 @@ const (
 	// StatusRunning is "running".
 	StatusRunning Status = "running"
 
-	// StatusComplete is "complete".
-	StatusComplete Status = "complete"
+	// StatusRetryScheduled is "retry_scheduled".
+	StatusRetryScheduled Status = "retry_scheduled"
+
+	// StatusSucceeded is "succeeded".
+	StatusSucceeded Status = "succeeded"
 
 	// StatusFailed is "failed".
 	StatusFailed Status = "failed"
 
 	// StatusCanceled is "canceled".
 	StatusCanceled Status = "canceled"
+
+	// StatusDeadLettered is "dead_lettered".
+	StatusDeadLettered Status = "dead_lettered"
 )
 
 // Submit constructs a freshly-submitted task.

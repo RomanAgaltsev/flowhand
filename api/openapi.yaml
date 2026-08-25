@@ -80,7 +80,10 @@ components:
         id: { type: string, format: uuid }
         status:
           type: string
-          enum: [pending, running, succeeded, failed, cancelled]
+          description: >
+            Lifecycle state. `retry_scheduled` is a transient scheduler state surfaced for
+            observability; `dead_lettered` is terminal.
+          enum: [pending, running, retry_scheduled, succeeded, failed, canceled, dead_lettered]
         created_at: { type: string, format: date-time }
     Error:
       type: object

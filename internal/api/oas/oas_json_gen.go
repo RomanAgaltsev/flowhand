@@ -724,12 +724,16 @@ func (s *TaskStatus) Decode(d *jx.Decoder) error {
 		*s = TaskStatusPending
 	case TaskStatusRunning:
 		*s = TaskStatusRunning
+	case TaskStatusRetryScheduled:
+		*s = TaskStatusRetryScheduled
 	case TaskStatusSucceeded:
 		*s = TaskStatusSucceeded
 	case TaskStatusFailed:
 		*s = TaskStatusFailed
-	case TaskStatusCancelled:
-		*s = TaskStatusCancelled
+	case TaskStatusCanceled:
+		*s = TaskStatusCanceled
+	case TaskStatusDeadLettered:
+		*s = TaskStatusDeadLettered
 	default:
 		*s = TaskStatus(v)
 	}

@@ -171,11 +171,15 @@ func (s TaskStatus) Validate() error {
 		return nil
 	case "running":
 		return nil
+	case "retry_scheduled":
+		return nil
 	case "succeeded":
 		return nil
 	case "failed":
 		return nil
-	case "cancelled":
+	case "canceled":
+		return nil
+	case "dead_lettered":
 		return nil
 	default:
 		return errors.Errorf("invalid value: %v", s)

@@ -51,9 +51,11 @@ func TestToOASTaskStatusIsAlwaysValid(t *testing.T) {
 	for _, status := range []domaintasks.Status{
 		domaintasks.StatusPending,
 		domaintasks.StatusRunning,
-		domaintasks.StatusComplete,
+		domaintasks.StatusRetryScheduled,
+		domaintasks.StatusSucceeded,
 		domaintasks.StatusFailed,
 		domaintasks.StatusCanceled,
+		domaintasks.StatusDeadLettered,
 	} {
 		t.Run(string(status), func(t *testing.T) {
 			task := domaintasks.FromPersistence(

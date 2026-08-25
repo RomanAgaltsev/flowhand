@@ -16,7 +16,7 @@ import (
 func TestQuerierGet_MapsToView(t *testing.T) {
 	id := uuid.Must(uuid.NewV7())
 	created := time.Now().UTC().Truncate(time.Microsecond)
-	stored := domaintasks.FromPersistence(id, domaintasks.StatusComplete, "echo",
+	stored := domaintasks.FromPersistence(id, domaintasks.StatusSucceeded, "echo",
 		json.RawMessage(`{"a":1}`), created)
 
 	q := NewQuerier(&fakeTasksRepo{rec: &recorder{}, stored: stored})
@@ -25,7 +25,7 @@ func TestQuerierGet_MapsToView(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, id, got.ID)
-	assert.Equal(t, "complete", got.Status) // domain vocabulary; the API mapper renames it
+	assert.Equal(t, "succeeded", got.Status) // one vocabulary end to end: domain, database and wire agree
 	assert.Equal(t, "echo", got.Handler)
 	assert.True(t, created.Equal(got.CreatedAt))
 }
