@@ -5,14 +5,11 @@ package tasks_test
 import (
 	"context"
 	"encoding/json"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jackc/pgx/v5/stdlib"
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
@@ -24,6 +21,7 @@ import (
 	repotasks "github.com/RomanAgaltsev/flowhand/internal/repository/tasks"
 	"github.com/RomanAgaltsev/flowhand/internal/storage"
 	"github.com/RomanAgaltsev/flowhand/internal/storage/txmgr"
+	"github.com/RomanAgaltsev/flowhand/migrations"
 )
 
 // startPostgresWithMigrations brings up a throwaway Postgres, applies every
@@ -47,7 +45,7 @@ func startPostgresWithMigrations(t *testing.T) *pgxpool.Pool {
 		),
 	)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = pg.Terminate(ctx) })
+	testcontainers.CleanupContainer(t, pg)
 
 	dsn, err := pg.ConnectionString(ctx, "sslmode=disable")
 	require.NoError(t, err)
@@ -56,14 +54,20 @@ func startPostgresWithMigrations(t *testing.T) *pgxpool.Pool {
 	require.NoError(t, err)
 	t.Cleanup(pool.Close)
 
-	// goose speaks database/sql; borrow a *sql.DB over the same pool.
-	db := stdlib.OpenDBFromPool(pool)
-	t.Cleanup(func() { _ = db.Close() })
-
-	require.NoError(t, goose.SetDialect("postgres"))
-	dir, err := filepath.Abs(filepath.Join("..", "..", "..", "migrations"))
+	// Migrate through the very provider `flowhand migrate up` uses, rather than a
+	// second copy of its locker config that would drift from it. Its pool is
+	// transient — closed as soon as the migrations land — while the pool returned
+	// above is the one the repository under test runs on.
+	p, closeProvider, err := storage.NewGooseProvider(
+		ctx,
+		config.DB{DSN: dsn, MaxConns: 2, MinConns: 1},
+		migrations.FS,
+	)
 	require.NoError(t, err)
-	require.NoError(t, goose.Up(db, dir), "migrations must apply cleanly")
+	defer func() { require.NoError(t, closeProvider()) }()
+
+	_, err = p.Up(ctx)
+	require.NoError(t, err, "migrations must apply cleanly")
 
 	return pool
 }
@@ -94,9 +98,13 @@ func TestRepo_InsertThenGet_PersistsHandler(t *testing.T) {
 }
 
 // TestRepo_DuplicateKeyIsErrConflict proves the link the Commander's fakes
-// cannot: that a real Postgres 23505 from the partial unique index actually
-// becomes domaintasks.ErrConflict. Delete the SQLSTATE check in postgres.go and
-// every unit test still passes while this one fails.
+// cannot: that a real Postgres 23505 actually becomes domaintasks.ErrConflict.
+// Delete the SQLSTATE check in postgres.go and every unit test still passes
+// while this one fails.
+//
+// Since S0 the 23505 comes from idempotency_keys' composite primary key, not
+// from a unique index on `tasks` — that index was dropped because the archive
+// trigger would evaporate it the moment a task completed (ADR 0005).
 func TestRepo_DuplicateKeyIsErrConflict(t *testing.T) {
 	pool := startPostgresWithMigrations(t)
 	repo := repotasks.New(txmgr.New(pool))
@@ -110,9 +118,9 @@ func TestRepo_DuplicateKeyIsErrConflict(t *testing.T) {
 	require.NoError(t, repo.Insert(ctx, newTask(), &key))
 	require.ErrorIs(t, repo.Insert(ctx, newTask(), &key), domaintasks.ErrConflict)
 
-	// The partial index ignores NULLs, so keyless submits must never collide -
-	// this is the invariant that lets Commander treat a keyless 23505 as a
-	// genuine primary-key failure rather than something to replay.
+	// A keyless submit writes no ledger row at all, so keyless submits must never
+	// collide - this is the invariant that lets Commander treat a keyless 23505 as
+	// a genuine primary-key failure rather than something to replay.
 	require.NoError(t, repo.Insert(ctx, newTask(), nil))
 	require.NoError(t, repo.Insert(ctx, newTask(), nil))
 }

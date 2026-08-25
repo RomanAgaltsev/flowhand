@@ -14,6 +14,7 @@ type Querier interface {
 	CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error)
 	GetTaskByID(ctx context.Context, id uuid.UUID) (Task, error)
 	GetTaskByIdempotencyKey(ctx context.Context, idempotencyKey *string) (Task, error)
+	InsertIdempotencyKey(ctx context.Context, arg InsertIdempotencyKeyParams) error
 }
 
 var _ Querier = (*Queries)(nil)

@@ -2,6 +2,7 @@ package tasks
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 
@@ -29,15 +30,32 @@ func New(r repository.Resolver) *Repo {
 	return &Repo{resolver: r}
 }
 
-// Insert persists a new task. A unique-constraint violation on the idempotency
-// key is translated to domaintasks.ErrConflict so callers never see SQLSTATE.
+// Insert persists a new task and, when a key is supplied, its ledger row — in
+// whatever transaction the Resolver hands back, so the two commit together.
+// The ledger's composite PK (tenant_id, handler, idempotency_key) is the durable
+// dedup floor; `tasks` carries no uniqueness of its own since the archive trigger
+// would evaporate it on completion.
 func (r *Repo) Insert(ctx context.Context, t domaintasks.Task, idempotencyKey *string) error {
 	q := queries.New(r.resolver.Resolve(ctx))
 	if _, err := q.CreateTask(ctx, toRow(t, idempotencyKey)); err != nil {
-		if isUniqueViolation(err) {
-			return fmt.Errorf("insert task %s: %w", t.ID(), domaintasks.ErrConflict)
-		}
 		return fmt.Errorf("insert task %s: %w", t.ID(), err)
+	}
+	if idempotencyKey == nil {
+		return nil
+	}
+	sum := sha256.Sum256(t.Payload())
+	err := q.InsertIdempotencyKey(ctx, queries.InsertIdempotencyKeyParams{
+		TenantID:       defaultTenantID,
+		Handler:        t.Handler(),
+		IdempotencyKey: *idempotencyKey,
+		TaskID:         t.ID(),
+		PayloadHash:    sum[:],
+	})
+	if isUniqueViolation(err) {
+		return fmt.Errorf("insert task %s: %w", t.ID(), domaintasks.ErrConflict)
+	}
+	if err != nil {
+		return fmt.Errorf("insert idempotency key: %w", err)
 	}
 	return nil
 }

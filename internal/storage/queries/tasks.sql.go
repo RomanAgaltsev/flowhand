@@ -7,21 +7,37 @@ package queries
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
 
 const createTask = `-- name: CreateTask :one
-INSERT INTO tasks (id, idempotency_key, payload, handler)
-VALUES ($1, $2, $3, $4)
-RETURNING id, idempotency_key, payload, status, created_at, handler
+INSERT INTO tasks (
+    id, idempotency_key, payload, handler,
+    tenant_id, priority, earliest_at, attempt, max_attempts,
+    shard_id, cancel_requested, updated_at
+) VALUES (
+    $1, $2, $3, $4,
+    $5, $6, $7, $8, $9,
+    $10, $11, $12
+)
+RETURNING id, idempotency_key, payload, status, created_at, handler, tenant_id, priority, earliest_at, attempt, max_attempts, shard_id, cancel_requested, updated_at, started_at, worker_id, lease_until, lease_epoch, trace_id
 `
 
 type CreateTaskParams struct {
-	ID             uuid.UUID `json:"id"`
-	IdempotencyKey *string   `json:"idempotency_key"`
-	Payload        []byte    `json:"payload"`
-	Handler        string    `json:"handler"`
+	ID              uuid.UUID `json:"id"`
+	IdempotencyKey  *string   `json:"idempotency_key"`
+	Payload         []byte    `json:"payload"`
+	Handler         string    `json:"handler"`
+	TenantID        uuid.UUID `json:"tenant_id"`
+	Priority        int16     `json:"priority"`
+	EarliestAt      time.Time `json:"earliest_at"`
+	Attempt         int32     `json:"attempt"`
+	MaxAttempts     int32     `json:"max_attempts"`
+	ShardID         int32     `json:"shard_id"`
+	CancelRequested bool      `json:"cancel_requested"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error) {
@@ -30,6 +46,14 @@ func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, e
 		arg.IdempotencyKey,
 		arg.Payload,
 		arg.Handler,
+		arg.TenantID,
+		arg.Priority,
+		arg.EarliestAt,
+		arg.Attempt,
+		arg.MaxAttempts,
+		arg.ShardID,
+		arg.CancelRequested,
+		arg.UpdatedAt,
 	)
 	var i Task
 	err := row.Scan(
@@ -39,14 +63,25 @@ func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, e
 		&i.Status,
 		&i.CreatedAt,
 		&i.Handler,
+		&i.TenantID,
+		&i.Priority,
+		&i.EarliestAt,
+		&i.Attempt,
+		&i.MaxAttempts,
+		&i.ShardID,
+		&i.CancelRequested,
+		&i.UpdatedAt,
+		&i.StartedAt,
+		&i.WorkerID,
+		&i.LeaseUntil,
+		&i.LeaseEpoch,
+		&i.TraceID,
 	)
 	return i, err
 }
 
 const getTaskByID = `-- name: GetTaskByID :one
-SELECT id, idempotency_key, payload, status, created_at, handler
-FROM tasks
-WHERE id = $1
+SELECT id, idempotency_key, payload, status, created_at, handler, tenant_id, priority, earliest_at, attempt, max_attempts, shard_id, cancel_requested, updated_at, started_at, worker_id, lease_until, lease_epoch, trace_id FROM tasks WHERE id = $1
 `
 
 func (q *Queries) GetTaskByID(ctx context.Context, id uuid.UUID) (Task, error) {
@@ -59,14 +94,25 @@ func (q *Queries) GetTaskByID(ctx context.Context, id uuid.UUID) (Task, error) {
 		&i.Status,
 		&i.CreatedAt,
 		&i.Handler,
+		&i.TenantID,
+		&i.Priority,
+		&i.EarliestAt,
+		&i.Attempt,
+		&i.MaxAttempts,
+		&i.ShardID,
+		&i.CancelRequested,
+		&i.UpdatedAt,
+		&i.StartedAt,
+		&i.WorkerID,
+		&i.LeaseUntil,
+		&i.LeaseEpoch,
+		&i.TraceID,
 	)
 	return i, err
 }
 
 const getTaskByIdempotencyKey = `-- name: GetTaskByIdempotencyKey :one
-SELECT id, idempotency_key, payload, status, created_at, handler
-FROM tasks
-WHERE idempotency_key = $1
+SELECT id, idempotency_key, payload, status, created_at, handler, tenant_id, priority, earliest_at, attempt, max_attempts, shard_id, cancel_requested, updated_at, started_at, worker_id, lease_until, lease_epoch, trace_id FROM tasks WHERE idempotency_key = $1
 `
 
 func (q *Queries) GetTaskByIdempotencyKey(ctx context.Context, idempotencyKey *string) (Task, error) {
@@ -79,6 +125,43 @@ func (q *Queries) GetTaskByIdempotencyKey(ctx context.Context, idempotencyKey *s
 		&i.Status,
 		&i.CreatedAt,
 		&i.Handler,
+		&i.TenantID,
+		&i.Priority,
+		&i.EarliestAt,
+		&i.Attempt,
+		&i.MaxAttempts,
+		&i.ShardID,
+		&i.CancelRequested,
+		&i.UpdatedAt,
+		&i.StartedAt,
+		&i.WorkerID,
+		&i.LeaseUntil,
+		&i.LeaseEpoch,
+		&i.TraceID,
 	)
 	return i, err
+}
+
+const insertIdempotencyKey = `-- name: InsertIdempotencyKey :exec
+INSERT INTO idempotency_keys (tenant_id, handler, idempotency_key, task_id, payload_hash)
+VALUES ($1, $2, $3, $4, $5)
+`
+
+type InsertIdempotencyKeyParams struct {
+	TenantID       uuid.UUID `json:"tenant_id"`
+	Handler        string    `json:"handler"`
+	IdempotencyKey string    `json:"idempotency_key"`
+	TaskID         uuid.UUID `json:"task_id"`
+	PayloadHash    []byte    `json:"payload_hash"`
+}
+
+func (q *Queries) InsertIdempotencyKey(ctx context.Context, arg InsertIdempotencyKeyParams) error {
+	_, err := q.db.Exec(ctx, insertIdempotencyKey,
+		arg.TenantID,
+		arg.Handler,
+		arg.IdempotencyKey,
+		arg.TaskID,
+		arg.PayloadHash,
+	)
+	return err
 }
