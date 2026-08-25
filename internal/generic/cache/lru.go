@@ -12,6 +12,10 @@ type entry[K comparable, V any] struct {
 	expiresAt time.Time
 }
 
+// LRU is a bounded, TTL-aware least-recently-used cache, safe for concurrent
+// use. Eviction is lazy: expired entries are reclaimed when the cache is full or
+// when Len is called, never by a background goroutine, so an idle cache costs
+// nothing to keep around.
 type LRU[K comparable, V any] struct {
 	mu       sync.Mutex
 	capacity int
@@ -20,6 +24,9 @@ type LRU[K comparable, V any] struct {
 	now      func() time.Time
 }
 
+// NewLRU returns a cache holding at most capacity entries, or nil if capacity is
+// not positive. now supplies the clock TTLs are measured against; pass nil for
+// time.Now, or a stub to make expiry deterministic in tests.
 func NewLRU[K comparable, V any](capacity int, now func() time.Time) *LRU[K, V] {
 	if capacity <= 0 {
 		return nil
@@ -37,6 +44,9 @@ func NewLRU[K comparable, V any](capacity int, now func() time.Time) *LRU[K, V] 
 	}
 }
 
+// Get returns the value stored under key and whether it was found. An entry
+// past its TTL reports false and is dropped, so it never counts against
+// capacity. A hit is promoted to most-recently-used.
 func (c *LRU[K, V]) Get(key K) (V, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -60,7 +70,13 @@ func (c *LRU[K, V]) Get(key K) (V, bool) {
 	return item.value, true
 }
 
-func (c *LRU[K, V]) Put(key K, value V, ttl time.Duration) { // ttl <= 0 means "no expiry"
+// Put stores value under key, replacing any existing entry and promoting it to
+// most-recently-used. A ttl of zero or less means the entry never expires.
+//
+// When the cache is over capacity, expired entries are reclaimed first and only
+// then is the least-recently-used live entry evicted — otherwise a cache full of
+// dead entries would evict live ones.
+func (c *LRU[K, V]) Put(key K, value V, ttl time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -97,6 +113,8 @@ func (c *LRU[K, V]) Put(key K, value V, ttl time.Duration) { // ttl <= 0 means "
 	}
 }
 
+// Delete removes key and reports whether it was present. An expired but
+// not-yet-reclaimed entry still counts as present.
 func (c *LRU[K, V]) Delete(key K) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -110,7 +128,9 @@ func (c *LRU[K, V]) Delete(key K) bool {
 	return true
 }
 
-func (c *LRU[K, V]) Len() int { // counts unexpired entries
+// Len returns the number of live entries, reclaiming expired ones as it counts.
+// It therefore takes the lock and mutates — it is not a cheap read.
+func (c *LRU[K, V]) Len() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 

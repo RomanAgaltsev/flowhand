@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"testing"
 
-	domaintasks "github.com/RomanAgaltsev/flowhand/internal/domain/tasks"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/require"
+
+	domaintasks "github.com/RomanAgaltsev/flowhand/internal/domain/tasks"
 )
 
 func TestTranslate(t *testing.T) {

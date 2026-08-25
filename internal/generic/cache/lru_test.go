@@ -15,7 +15,7 @@ import (
 func TestLRUCapacity(t *testing.T) {
 	const capacity = 10
 
-	lru := NewLRU[int, int](capacity, func() time.Time { return time.Now() })
+	lru := NewLRU[int, int](capacity, time.Now)
 
 	for i := range capacity {
 		lru.Put(i+1, i+1, 0)
@@ -209,9 +209,7 @@ func TestLRUMatchesReferenceModel(t *testing.T) {
 	})
 
 	properties.Property("Put/Get sequences match a reference model", prop.ForAll(
-		func(ops []lruOp, capacity int) (bool, error) {
-			return replayOps(ops, capacity)
-		},
+		replayOps,
 		gen.SliceOf(opGen),
 		gen.IntRange(1, 8),
 	))

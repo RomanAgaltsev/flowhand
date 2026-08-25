@@ -29,7 +29,7 @@ func TestPool_Ping(t *testing.T) {
 		),
 	)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = pg.Terminate(ctx) })
+	testcontainers.CleanupContainer(t, pg)
 
 	dsn, err := pg.ConnectionString(ctx, "sslmode=disable")
 	require.NoError(t, err)

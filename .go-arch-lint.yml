@@ -75,6 +75,11 @@ components:
   config: { in: config }
   obs: { in: obs }
 
+  # Shared generic containers. Nothing imports this yet; declaring it anyway
+  # keeps `go-arch-lint check` silent, because a file in no component is
+  # reported as a notice rather than ignored.
+  generic-cache: { in: generic/cache }
+
 deps:
   # The composition root is the one component allowed to see every layer at
   # once — that is what makes it the composition root.
@@ -134,7 +139,7 @@ deps:
     mayDependOn: [domain]
 
   # Leaves — deliberately absent from deps, which denies them every internal
-  # dependency: domain, oas, queries, client, config.
+  # dependency: domain, oas, queries, client, config, generic-cache.
   # Do NOT "fix" this by adding `mayDependOn: []`; see the header note.
 
 excludeFiles:
