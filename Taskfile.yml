@@ -29,6 +29,18 @@ vars:
   GO_ARCH_LINT: '{{.BIN_DIR}}/go-arch-lint{{.EXE_EXT}}'
 
 
+  # Trees the formatters must never touch. gofumpt and gci happily reformat
+  # generated code; the change then sits in the working tree until the next
+  # `task generate` reverts it, so the churn lands in unrelated commits and the
+  # diff of a real change is buried under it.
+  #
+  # These are the three generator outputs: buf (api/proto/gen, see buf.gen.yaml),
+  # ogen (internal/api/oas) and sqlc (internal/storage/queries, see sqlc.yaml).
+  # Add a path here whenever a new generator is wired up.
+  #
+  # `*/mocks/*` is kept for the day mocks are generated; it matches nothing today.
+  FMT_EXCLUDES: "! -path '*/api/proto/gen/*' ! -path '*/internal/api/oas/*' ! -path '*/internal/storage/queries/*' ! -path '*/mocks/*'"
+
   MODULE: github.com/RomanAgaltsev/flowhand
   BIN: bin/flowhand{{.EXE_EXT}}
   COMPOSE_FILE: deploy/compose/docker-compose.yml
@@ -115,9 +127,9 @@ tasks:
     deps: [formatters:install]
     cmds:
       - echo 'formatting code with gofumpt...'
-      - bash -c "find . -type f -name '*.go' ! -path '*/mocks/*' ! -path '*/pkg/proto/*' ! -path '*/pkg/openapi/*' -exec {{.GOFUMPT}} -extra -w {} +"
+      - bash -c "find . -type f -name '*.go' {{.FMT_EXCLUDES}} -exec {{.GOFUMPT}} -extra -w {} +"
       - echo 'sorting imports with gci...'
-      - bash -c "find . -type f -name '*.go' ! -path '*/mocks/*' ! -path '*/pkg/proto/*' ! -path '*/pkg/openapi/*' -exec {{.GCI}} write -s standard -s default -s 'prefix(github.com/RomanAgaltsev/flowhand)' {} +"
+      - bash -c "find . -type f -name '*.go' {{.FMT_EXCLUDES}} -exec {{.GCI}} write -s standard -s default -s 'prefix(github.com/RomanAgaltsev/flowhand)' {} +"
 
   lint:
     desc: run golangci-lint

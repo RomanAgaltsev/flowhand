@@ -2,7 +2,7 @@
 CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
 
 CREATE TABLE tasks (
-    id UUID PRIMARY KEY,
+    id UUID PRIMARY KEY DEFAULT uuidv7(),
     idempotency_key TEXT,
     payload JSONB NOT NULL DEFAULT '{}'::JSONB,
     status TEXT NOT NULL DEFAULT 'pending',

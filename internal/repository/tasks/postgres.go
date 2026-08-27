@@ -67,7 +67,7 @@ func (r *Repo) Get(ctx context.Context, id uuid.UUID) (domaintasks.Task, error) 
 	if err != nil {
 		return domaintasks.Task{}, fmt.Errorf("get task %s: %w", id, translate(err))
 	}
-	return toDomain(row), nil
+	return toDomain(row)
 }
 
 // GetByIdempotencyKey returns a task from repo by idempotency key.
@@ -77,7 +77,7 @@ func (r *Repo) GetByIdempotencyKey(ctx context.Context, key string) (domaintasks
 	if err != nil {
 		return domaintasks.Task{}, fmt.Errorf("get task by idempotency key: %w", translate(err))
 	}
-	return toDomain(row), nil
+	return toDomain(row)
 }
 
 // translate maps driver errors to domain sentinels so no layer above this one
