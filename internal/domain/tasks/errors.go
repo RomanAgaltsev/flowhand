@@ -57,3 +57,12 @@ var ErrUnknownHandler = errors.New("unknown handler")
 // This is a wiring bug in the composition root, not bad user input — but it is
 // returned rather than panicked so no request path can take down the process.
 var ErrNilHandlerCatalog = errors.New("nil handler catalog")
+
+// ErrInvalidMaxAttempts is returned when a task is submitted with a zero
+// attempt budget. Zero is not "unlimited" — CanRetry would be false forever,
+// so the task could never be retried and never cleanly dead-lettered.
+var ErrInvalidMaxAttempts = errors.New("max attempts must be greater than zero")
+
+// ErrNilPayload is returned when a task is submitted without a payload. An
+// empty JSON object is a legitimate payload; a nil one is a caller bug.
+var ErrNilPayload = errors.New("nil payload")

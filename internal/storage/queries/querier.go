@@ -11,10 +11,14 @@ import (
 )
 
 type Querier interface {
+	CreateAttempt(ctx context.Context, arg CreateAttemptParams) (TaskAttempt, error)
 	CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error)
 	GetTaskByID(ctx context.Context, id uuid.UUID) (Task, error)
 	GetTaskByIdempotencyKey(ctx context.Context, idempotencyKey *string) (Task, error)
 	InsertIdempotencyKey(ctx context.Context, arg InsertIdempotencyKeyParams) error
+	// Ordered by attempt so the aggregate rebuilds its history in the order it
+	// happened; Task.finishOpenAttempt only ever looks at the last element.
+	ListTaskAttempts(ctx context.Context, taskID uuid.UUID) ([]TaskAttempt, error)
 }
 
 var _ Querier = (*Queries)(nil)

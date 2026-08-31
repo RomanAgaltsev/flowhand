@@ -2,15 +2,43 @@ package tasks
 
 import (
 	"encoding/json"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
 )
 
-// FromPersistence rebuilds a Task from raw column values. Used ONLY by
-// internal/repository/tasks. Not part of the public API.
-func FromPersistence(id uuid.UUID, status Status, handler string, payload json.RawMessage, createdAt time.Time) Task {
-	return Task{id: id, status: status, handler: handler, payload: payload, createdAt: createdAt}
+// FromPersistence rebuilds an aggregate from stored state. It assigns fields
+// directly and deliberately does NOT go through Submit/Start/etc — those emit
+// events, and replaying history is not the same thing as it happening again.
+// pendingEvents is left nil.
+//
+// The attempts slice is cloned: the caller keeps no writable handle into the
+// aggregate it just built.
+func FromPersistence(
+	id uuid.UUID,
+	status Status,
+	handler Handler,
+	priority Priority,
+	payload json.RawMessage,
+	attempts []Attempt,
+	leaseEpoch LeaseEpoch,
+	earliestAt time.Time,
+	maxAttempts uint8,
+	createdAt time.Time,
+) Task {
+	return Task{
+		id:          id,
+		status:      status,
+		handler:     handler,
+		priority:    priority,
+		payload:     payload,
+		attempts:    slices.Clone(attempts),
+		leaseEpoch:  leaseEpoch,
+		earliestAt:  earliestAt,
+		maxAttempts: maxAttempts,
+		createdAt:   createdAt,
+	}
 }
 
 // HandlerFromPersistence rebuilds a Handler from a stored name WITHOUT

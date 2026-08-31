@@ -15,6 +15,21 @@ import (
 	"github.com/RomanAgaltsev/flowhand/internal/storage/queries"
 )
 
+// fakeCatalog stands in for the worker registry on the write path.
+type fakeCatalog struct{}
+
+func (fakeCatalog) Has(string) bool { return true }
+
+// submitted builds a pending task the way the Commander does.
+func submitted(t *testing.T, id uuid.UUID, payload json.RawMessage, now time.Time) domaintasks.Task {
+	t.Helper()
+	handler, err := domaintasks.NewHandler("echo", fakeCatalog{})
+	require.NoError(t, err)
+	task, err := domaintasks.Submit(id, handler, 3, payload, 5, now)
+	require.NoError(t, err)
+	return task
+}
+
 func TestToDomain(t *testing.T) {
 	id := uuid.Must(uuid.NewV7())
 	key := "idem-1"
@@ -26,23 +41,29 @@ func TestToDomain(t *testing.T) {
 		Payload:        []byte(`{"msg":"hi"}`),
 		Status:         "running",
 		CreatedAt:      createdAt,
+		EarliestAt:     createdAt,
 		Handler:        "echo",
+		Priority:       3,
+		MaxAttempts:    5,
 	}
 
-	task, err := toDomain(row)
+	task, err := toDomain(row, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, id, task.ID())
 	assert.Equal(t, domaintasks.StatusRunning, task.Status())
-	assert.Equal(t, "echo", task.Handler())
+	assert.Equal(t, "echo", task.Handler().Name())
+	assert.Equal(t, domaintasks.Priority(3), task.Priority())
+	assert.Equal(t, uint8(5), task.MaxAttempts())
 	assert.Equal(t, json.RawMessage(`{"msg":"hi"}`), task.Payload())
 	assert.True(t, createdAt.Equal(task.CreatedAt()))
+	assert.Empty(t, task.Attempts())
 }
 
 func TestToRow(t *testing.T) {
 	id := uuid.Must(uuid.NewV7())
 	key := "idem-1"
-	task := domaintasks.Submit(id, "echo", json.RawMessage(`{"msg":"hi"}`), time.Now())
+	task := submitted(t, id, json.RawMessage(`{"msg":"hi"}`), time.Now())
 
 	params := toRow(task, &key)
 
@@ -50,10 +71,15 @@ func TestToRow(t *testing.T) {
 	assert.Equal(t, &key, params.IdempotencyKey)
 	assert.Equal(t, "echo", params.Handler)
 	assert.Equal(t, []byte(`{"msg":"hi"}`), params.Payload)
+	// Before D2 these three were hardcoded in toRow because Task had nowhere
+	// to keep them. Asserting them is what keeps them from drifting back.
+	assert.Equal(t, int16(3), params.Priority)
+	assert.Equal(t, int32(5), params.MaxAttempts)
+	assert.Equal(t, int32(0), params.Attempt)
 }
 
 func TestToRowWithoutIdempotencyKey(t *testing.T) {
-	task := domaintasks.Submit(uuid.Must(uuid.NewV7()), "echo", json.RawMessage(`{}`), time.Now())
+	task := submitted(t, uuid.Must(uuid.NewV7()), json.RawMessage(`{}`), time.Now())
 
 	params := toRow(task, nil)
 
@@ -63,7 +89,7 @@ func TestToRowWithoutIdempotencyKey(t *testing.T) {
 func TestMapperRoundTrip(t *testing.T) {
 	id := uuid.Must(uuid.NewV7())
 	createdAt := time.Now().UTC().Truncate(time.Microsecond)
-	want := domaintasks.Submit(id, "echo", json.RawMessage(`{"msg":"hi"}`), createdAt)
+	want := submitted(t, id, json.RawMessage(`{"msg":"hi"}`), createdAt)
 
 	params := toRow(want, nil)
 
@@ -75,17 +101,85 @@ func TestMapperRoundTrip(t *testing.T) {
 		Payload:        params.Payload,
 		Status:         string(domaintasks.StatusPending),
 		CreatedAt:      createdAt,
+		EarliestAt:     params.EarliestAt,
 		Handler:        params.Handler,
+		Priority:       params.Priority,
+		MaxAttempts:    params.MaxAttempts,
 	}
 
-	got, err := toDomain(row)
+	got, err := toDomain(row, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, want.ID(), got.ID())
 	assert.Equal(t, want.Status(), got.Status())
 	assert.Equal(t, want.Handler(), got.Handler())
+	assert.Equal(t, want.Priority(), got.Priority())
+	assert.Equal(t, want.MaxAttempts(), got.MaxAttempts())
 	assert.Equal(t, want.Payload(), got.Payload())
 	assert.True(t, want.CreatedAt().Equal(got.CreatedAt()))
+	assert.True(t, want.EarliestAt().Equal(got.EarliestAt()))
+}
+
+// Attempts are the half of the aggregate D2 added, and the type system will not
+// catch a mapper that silently drops them. Two attempts, because one closed and
+// one open is the shape that exercises both nullable-time branches.
+func TestMapperRoundTripCarriesAttempts(t *testing.T) {
+	id := uuid.Must(uuid.NewV7())
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	task := submitted(t, id, json.RawMessage(`{}`), now)
+	require.NoError(t, task.Start(uuid.Must(uuid.NewV7()), "worker-1", now.Add(time.Minute), now))
+	require.NoError(t, task.ScheduleRetry("timeout", "deadline exceeded", now.Add(time.Minute), now))
+	require.NoError(t, task.Start(uuid.Must(uuid.NewV7()), "worker-2", now.Add(2*time.Minute), now))
+
+	rows := toAttemptRows(task)
+	require.Len(t, rows, 2)
+	assert.Equal(t, int32(1), rows[0].Attempt)
+	assert.Equal(t, int32(2), rows[1].Attempt)
+	assert.Equal(t, "worker-1", rows[0].WorkerID)
+	// The first attempt closed as failed and carries its reason; the second is
+	// still open, so finished_at is NULL and the error columns are NULL too.
+	assert.Equal(t, string(domaintasks.AttemptFailed), rows[0].Status)
+	require.NotNil(t, rows[0].FinishedAt)
+	require.NotNil(t, rows[0].ErrorClass)
+	assert.Equal(t, "timeout", *rows[0].ErrorClass)
+	assert.Equal(t, string(domaintasks.AttemptRunning), rows[1].Status)
+	assert.Nil(t, rows[1].FinishedAt)
+	assert.Nil(t, rows[1].ErrorClass)
+
+	// Back through toDomain via the attempt rows the INSERT would have written.
+	attemptRows := make([]queries.TaskAttempt, 0, len(rows))
+	for _, r := range rows {
+		attemptRows = append(attemptRows, queries.TaskAttempt{
+			ID: r.ID, TaskID: r.TaskID, Attempt: r.Attempt, WorkerID: r.WorkerID,
+			Status: r.Status, StartedAt: r.StartedAt, FinishedAt: r.FinishedAt,
+			LastHeartbeat: r.LastHeartbeat, ErrorClass: r.ErrorClass,
+			ErrorMessage: r.ErrorMessage,
+		})
+	}
+
+	params := toRow(task, nil)
+	got, err := toDomain(queries.Task{
+		ID: params.ID, Payload: params.Payload, Status: string(task.Status()),
+		CreatedAt: now, EarliestAt: params.EarliestAt, Handler: params.Handler,
+		Priority: params.Priority, MaxAttempts: params.MaxAttempts,
+	}, attemptRows)
+	require.NoError(t, err)
+
+	require.Len(t, got.Attempts(), 2)
+	assert.Equal(t, uint8(2), got.AttemptCount())
+	assert.Equal(t, "worker-1", got.Attempts()[0].WorkerID())
+	assert.Equal(t, "timeout", got.Attempts()[0].ErrorClass())
+	assert.False(t, got.Attempts()[0].IsOpen())
+	assert.True(t, got.Attempts()[1].IsOpen())
+
+	// Reconstruction is silent: a FromPersistence that re-ran Submit's logic
+	// would republish task.submitted.v1 on every GET.
+	var replayed int
+	for range got.PullEvents() {
+		replayed++
+	}
+	assert.Zero(t, replayed)
 }
 
 // A row can hold a value the domain rejects — written before the CHECK
@@ -102,7 +196,7 @@ func TestToDomainRejectsCorruptPriority(t *testing.T) {
 			row := validRow()
 			row.Priority = priority
 
-			_, err := toDomain(row)
+			_, err := toDomain(row, nil)
 
 			assert.ErrorIs(t, err, domaintasks.ErrInvalidPriority)
 		})
@@ -117,7 +211,7 @@ func TestToDomainRejectsCorruptShardID(t *testing.T) {
 			row := validRow()
 			row.ShardID = shard
 
-			_, err := toDomain(row)
+			_, err := toDomain(row, nil)
 
 			assert.ErrorIs(t, err, domaintasks.ErrInvalidShardID)
 		})
@@ -132,7 +226,7 @@ func TestToDomainRejectsNegativeLeaseEpoch(t *testing.T) {
 	epoch := int64(-1)
 	row.LeaseEpoch = &epoch
 
-	_, err := toDomain(row)
+	_, err := toDomain(row, nil)
 
 	assert.ErrorIs(t, err, domaintasks.ErrInvalidLeaseEpoch)
 }
@@ -183,12 +277,13 @@ func TestLeaseEpochRoundTripsThroughTheRow(t *testing.T) {
 // corrupt exactly one field and know that field is what the error is about.
 func validRow() queries.Task {
 	return queries.Task{
-		ID:        uuid.Must(uuid.NewV7()),
-		Status:    string(domaintasks.StatusPending),
-		Handler:   "echo",
-		Payload:   []byte(`{}`),
-		CreatedAt: time.Now().UTC(),
-		Priority:  0,
-		ShardID:   0,
+		ID:          uuid.Must(uuid.NewV7()),
+		Status:      string(domaintasks.StatusPending),
+		Handler:     "echo",
+		Payload:     []byte(`{}`),
+		CreatedAt:   time.Now().UTC(),
+		Priority:    0,
+		ShardID:     0,
+		MaxAttempts: 1,
 	}
 }

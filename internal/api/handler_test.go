@@ -49,9 +49,18 @@ func TestCreateTask_HappyPath(t *testing.T) {
 	id := uuid.Must(uuid.NewV7())
 	created := time.Now().UTC().Truncate(time.Microsecond)
 	cmd := &fakeCommander{
-		task: domaintasks.FromPersistence(id, domaintasks.StatusPending, "echo",
-			json.RawMessage(`{}`), created),
-	}
+		task: domaintasks.FromPersistence(
+			id,
+			domaintasks.StatusPending,
+			domaintasks.HandlerFromPersistence("echo"),
+			0,
+			json.RawMessage(`{}`),
+			nil,
+			0,
+			created,
+			1,
+			created,
+		)}
 	h := api.NewHandler(cmd, &fakeQuerier{}, discardLogger())
 
 	resp, err := h.CreateTask(context.Background(), &oas.CreateTaskRequest{
@@ -75,9 +84,18 @@ func TestCreateTask_HappyPath(t *testing.T) {
 
 func TestCreateTask_AbsentKeyBecomesEmptyString(t *testing.T) {
 	cmd := &fakeCommander{
-		task: domaintasks.FromPersistence(uuid.Must(uuid.NewV7()), domaintasks.StatusPending,
-			"echo", json.RawMessage(`{}`), time.Now().UTC()),
-	}
+		task: domaintasks.FromPersistence(
+			uuid.Must(uuid.NewV7()),
+			domaintasks.StatusPending,
+			domaintasks.HandlerFromPersistence("echo"),
+			0,
+			json.RawMessage(`{}`),
+			nil,
+			0,
+			time.Now().UTC(),
+			1,
+			time.Now().UTC(),
+		)}
 	h := api.NewHandler(cmd, &fakeQuerier{}, discardLogger())
 
 	_, err := h.CreateTask(context.Background(), &oas.CreateTaskRequest{Handler: "echo"})
@@ -90,9 +108,18 @@ func TestCreateTask_AbsentKeyBecomesEmptyString(t *testing.T) {
 
 func TestCreateTask_MarshalsPayload(t *testing.T) {
 	cmd := &fakeCommander{
-		task: domaintasks.FromPersistence(uuid.Must(uuid.NewV7()), domaintasks.StatusPending,
-			"echo", json.RawMessage(`{}`), time.Now().UTC()),
-	}
+		task: domaintasks.FromPersistence(uuid.Must(
+			uuid.NewV7()),
+			domaintasks.StatusPending,
+			domaintasks.HandlerFromPersistence("echo"),
+			0,
+			json.RawMessage(`{}`),
+			nil,
+			0,
+			time.Now().UTC(),
+			1,
+			time.Now().UTC(),
+		)}
 	h := api.NewHandler(cmd, &fakeQuerier{}, discardLogger())
 
 	req := &oas.CreateTaskRequest{Handler: "echo"}
@@ -107,8 +134,17 @@ func TestCreateTask_MarshalsPayload(t *testing.T) {
 
 func TestCreateTask_UnmappedStatusIs500(t *testing.T) {
 	h := api.NewHandler(&fakeCommander{
-		task: domaintasks.FromPersistence(uuid.Must(uuid.NewV7()), domaintasks.Status("quarantined"),
-			"echo", json.RawMessage(`{}`), time.Now().UTC()),
+		task: domaintasks.FromPersistence(
+			uuid.Must(uuid.NewV7()),
+			domaintasks.Status("quarantined"),
+			domaintasks.HandlerFromPersistence("echo"),
+			0,
+			json.RawMessage(`{}`),
+			nil,
+			0,
+			time.Now().UTC(),
+			1,
+			time.Now().UTC()),
 	}, &fakeQuerier{}, discardLogger())
 
 	_, err := h.CreateTask(context.Background(), &oas.CreateTaskRequest{Handler: "echo"})
@@ -118,9 +154,17 @@ func TestCreateTask_UnmappedStatusIs500(t *testing.T) {
 func TestGetTask_HappyPath(t *testing.T) {
 	id := uuid.Must(uuid.NewV7())
 	created := time.Now().UTC().Truncate(time.Microsecond)
-	h := api.NewHandler(&fakeCommander{}, &fakeQuerier{view: task.TaskView{
-		ID: id, Status: "pending", Handler: "echo", CreatedAt: created,
-	}}, discardLogger())
+	h := api.NewHandler(
+		&fakeCommander{},
+		&fakeQuerier{
+			view: task.TaskView{
+				ID:        id,
+				Status:    "pending",
+				Handler:   "echo",
+				CreatedAt: created,
+			}},
+		discardLogger(),
+	)
 
 	resp, err := h.GetTask(context.Background(), oas.GetTaskParams{ID: id})
 	require.NoError(t, err)
@@ -137,9 +181,16 @@ func TestGetTask_RejectsStatusOutsideThePublishedEnum(t *testing.T) {
 	// rather than a translation. What still has to hold is that a status the spec
 	// does not publish never reaches a client: serving it would be a contract
 	// violation that ogen's own Validate() would not catch on the way out.
-	h := api.NewHandler(&fakeCommander{}, &fakeQuerier{view: task.TaskView{
-		ID: uuid.Must(uuid.NewV7()), Status: "orphaned", CreatedAt: time.Now().UTC(),
-	}}, discardLogger())
+	h := api.NewHandler(
+		&fakeCommander{},
+		&fakeQuerier{
+			view: task.TaskView{
+				ID:        uuid.Must(uuid.NewV7()),
+				Status:    "orphaned",
+				CreatedAt: time.Now().UTC(),
+			}},
+		discardLogger(),
+	)
 
 	_, err := h.GetTask(context.Background(), oas.GetTaskParams{ID: uuid.Must(uuid.NewV7())})
 	require.Error(t, err, "an unpublished status must not be served as a Task")

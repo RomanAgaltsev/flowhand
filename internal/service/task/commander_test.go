@@ -77,7 +77,7 @@ func newTestCommander(t *testing.T, repo *fakeTasksRepo, ob *fakeOutbox, tx *fak
 	id uuid.UUID, now time.Time,
 ) *Commander {
 	t.Helper()
-	c := NewCommander(repo, ob, tx)
+	c := NewCommander(repo, ob, tx, fakeCatalog{})
 	c.now = func() time.Time { return now }
 	c.newID = func() (uuid.UUID, error) { return id, nil }
 	return c
@@ -105,7 +105,7 @@ func TestSubmit_HappyPath(t *testing.T) {
 
 	assert.Equal(t, id, got.ID())
 	assert.Equal(t, domaintasks.StatusPending, got.Status())
-	assert.Equal(t, "echo", got.Handler())
+	assert.Equal(t, "echo", got.Handler().Name())
 	assert.True(t, now.Equal(got.CreatedAt()))
 
 	assert.Nil(t, repo.gotKey, "no idempotency key supplied must reach the DB as NULL, not \"\"")
@@ -119,7 +119,7 @@ func TestSubmit_PassesIdempotencyKey(t *testing.T) {
 	c := newTestCommander(t, repo, &fakeOutbox{rec: rec}, &fakeTx{rec: rec},
 		uuid.Must(uuid.NewV7()), time.Now().UTC())
 
-	_, err := c.Submit(context.Background(), SubmitCommand{Handler: "echo", IdempotencyKey: "k-1"})
+	_, err := c.Submit(context.Background(), SubmitCommand{Handler: "echo", Payload: json.RawMessage(`{}`), IdempotencyKey: "k-1"})
 	require.NoError(t, err)
 
 	require.NotNil(t, repo.gotKey)
@@ -128,9 +128,11 @@ func TestSubmit_PassesIdempotencyKey(t *testing.T) {
 
 func TestSubmit_ConflictReplaysExistingTask(t *testing.T) {
 	rec := &recorder{}
+	storedAt := time.Now().UTC()
 	existing := domaintasks.FromPersistence(
-		uuid.Must(uuid.NewV7()), domaintasks.StatusRunning, "echo",
-		json.RawMessage(`{}`), time.Now().UTC(),
+		uuid.Must(uuid.NewV7()), domaintasks.StatusRunning,
+		domaintasks.HandlerFromPersistence("echo"), 0,
+		json.RawMessage(`{}`), nil, 0, storedAt, 1, storedAt,
 	)
 	repo := &fakeTasksRepo{
 		rec:       rec,
@@ -140,7 +142,7 @@ func TestSubmit_ConflictReplaysExistingTask(t *testing.T) {
 	ob := &fakeOutbox{rec: rec}
 	c := newTestCommander(t, repo, ob, &fakeTx{rec: rec}, uuid.Must(uuid.NewV7()), time.Now().UTC())
 
-	got, err := c.Submit(context.Background(), SubmitCommand{Handler: "echo", IdempotencyKey: "k-1"})
+	got, err := c.Submit(context.Background(), SubmitCommand{Handler: "echo", Payload: json.RawMessage(`{}`), IdempotencyKey: "k-1"})
 	require.NoError(t, err)
 
 	assert.Equal(t, existing.ID(), got.ID())
@@ -155,18 +157,18 @@ func TestSubmit_OutboxErrorAborts(t *testing.T) {
 	c := newTestCommander(t, &fakeTasksRepo{rec: rec}, &fakeOutbox{rec: rec, err: wantErr},
 		&fakeTx{rec: rec}, uuid.Must(uuid.NewV7()), time.Now().UTC())
 
-	_, err := c.Submit(context.Background(), SubmitCommand{Handler: "echo"})
+	_, err := c.Submit(context.Background(), SubmitCommand{Handler: "echo", Payload: json.RawMessage(`{}`)})
 	require.ErrorIs(t, err, wantErr)
 	assert.Equal(t, []string{"tx:begin", "insert", "append", "tx:rollback"}, rec.calls)
 }
 
 func TestSubmit_IDErrorTouchesNothing(t *testing.T) {
 	rec := &recorder{}
-	c := NewCommander(&fakeTasksRepo{rec: rec}, &fakeOutbox{rec: rec}, &fakeTx{rec: rec})
+	c := NewCommander(&fakeTasksRepo{rec: rec}, &fakeOutbox{rec: rec}, &fakeTx{rec: rec}, fakeCatalog{})
 	c.newID = func() (uuid.UUID, error) { return uuid.Nil, errors.New("entropy exhausted") }
 
-	_, err := c.Submit(context.Background(), SubmitCommand{Handler: "echo"})
-	require.Error(t, err)
+	_, err := c.Submit(context.Background(), SubmitCommand{Handler: "echo", Payload: json.RawMessage(`{}`)})
+	require.ErrorContains(t, err, "entropy exhausted") // not "nil payload": the test must fail for its own reason
 	assert.Empty(t, rec.calls, "must fail before opening a transaction")
 }
 
@@ -176,7 +178,7 @@ func TestSubmit_ConflictWithoutKeyIsNotReplayed(t *testing.T) {
 	c := newTestCommander(t, repo, &fakeOutbox{rec: rec}, &fakeTx{rec: rec},
 		uuid.Must(uuid.NewV7()), time.Now().UTC())
 
-	_, err := c.Submit(context.Background(), SubmitCommand{Handler: "echo"})
+	_, err := c.Submit(context.Background(), SubmitCommand{Handler: "echo", Payload: json.RawMessage(`{}`)})
 	require.ErrorContains(t, err, "idempotency conflict without a key")
 	assert.NotContains(t, rec.calls, "get_by_key")
 }
@@ -191,6 +193,13 @@ func TestSubmit_ReplayLookupFails(t *testing.T) {
 	c := newTestCommander(t, repo, &fakeOutbox{rec: rec}, &fakeTx{rec: rec},
 		uuid.Must(uuid.NewV7()), time.Now().UTC())
 
-	_, err := c.Submit(context.Background(), SubmitCommand{Handler: "echo", IdempotencyKey: "k-1"})
+	_, err := c.Submit(context.Background(), SubmitCommand{Handler: "echo", Payload: json.RawMessage(`{}`), IdempotencyKey: "k-1"})
 	require.ErrorContains(t, err, "replay idempotent task")
 }
+
+// fakeCatalog stands in for the worker registry. It accepts every name so the
+// Commander tests stay about the submit transaction; handler validation itself
+// is D1's tests.
+type fakeCatalog struct{}
+
+func (fakeCatalog) Has(string) bool { return true }

@@ -36,7 +36,7 @@ func (q *Querier) Get(ctx context.Context, id uuid.UUID) (TaskView, error) {
 	return TaskView{
 		ID:        row.ID(),
 		Status:    string(row.Status()),
-		Handler:   row.Handler(),
+		Handler:   row.Handler().Name(),
 		CreatedAt: row.CreatedAt(),
 	}, nil
 }

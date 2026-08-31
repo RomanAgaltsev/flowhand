@@ -16,8 +16,9 @@ import (
 func TestQuerierGet_MapsToView(t *testing.T) {
 	id := uuid.Must(uuid.NewV7())
 	created := time.Now().UTC().Truncate(time.Microsecond)
-	stored := domaintasks.FromPersistence(id, domaintasks.StatusSucceeded, "echo",
-		json.RawMessage(`{"a":1}`), created)
+	stored := domaintasks.FromPersistence(id, domaintasks.StatusSucceeded,
+		domaintasks.HandlerFromPersistence("echo"), 0,
+		json.RawMessage(`{"a":1}`), nil, 0, created, 1, created)
 
 	q := NewQuerier(&fakeTasksRepo{rec: &recorder{}, stored: stored})
 

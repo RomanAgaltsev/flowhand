@@ -58,7 +58,7 @@ var serverCmd = &cobra.Command{
 		outboxRepo := outbox.New()
 
 		h := api.NewHandler(
-			task.NewCommander(tasksRepo, outboxRepo, txm),
+			task.NewCommander(tasksRepo, outboxRepo, txm, acceptAnyHandler{}),
 			task.NewQuerier(tasksRepo),
 			slog.Default(),
 		)
@@ -66,6 +66,21 @@ var serverCmd = &cobra.Command{
 		return server.Run(ctx, cfg, h, reg)
 	},
 }
+
+// acceptAnyHandler is a placeholder tasks.HandlerCatalog: it accepts every
+// non-empty name, which is exactly the validation the control plane did before
+// D2 gave Task a real Handler value object.
+//
+// It is deliberately permissive rather than empty. An empty catalog would
+// reject every submission, and shipping a catalog that silently rejects real
+// traffic is worse than shipping one that admits it has no opinion yet. The
+// worker runtime (CE1) owns the real registry; this type goes away with it.
+//
+// NewHandler already rejects the empty name before consulting a catalog, so
+// Has never sees one.
+type acceptAnyHandler struct{}
+
+func (acceptAnyHandler) Has(name string) bool { return name != "" }
 
 func mustString(cmd *cobra.Command, name string) string {
 	v, err := cmd.Flags().GetString(name)

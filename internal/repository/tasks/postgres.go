@@ -30,15 +30,23 @@ func New(r repository.Resolver) *Repo {
 	return &Repo{resolver: r}
 }
 
-// Insert persists a new task and, when a key is supplied, its ledger row — in
-// whatever transaction the Resolver hands back, so the two commit together.
-// The ledger's composite PK (tenant_id, handler, idempotency_key) is the durable
-// dedup floor; `tasks` carries no uniqueness of its own since the archive trigger
-// would evaporate it on completion.
+// Insert persists a new task, its attempt history, and - when a key is supplied
+// - its ledger row, in whatever transaction the Resolver hands back, so they
+// commit together. The ledger's composite PK (tenant_id, handler,
+// idempotency_key) is the durable dedup floor; tasks carries no uniqueness of
+// its own since the archive trigger would evaporate it on completion.
 func (r *Repo) Insert(ctx context.Context, t domaintasks.Task, idempotencyKey *string) error {
 	q := queries.New(r.resolver.Resolve(ctx))
 	if _, err := q.CreateTask(ctx, toRow(t, idempotencyKey)); err != nil {
 		return fmt.Errorf("insert task %s: %w", t.ID(), err)
+	}
+	// Empty on the submit path - a freshly-submitted task has no attempts. The
+	// loop is here so the aggregate and the row never disagree once a caller
+	// inserts a task that already has history.
+	for _, a := range toAttemptRows(t) {
+		if _, err := q.CreateAttempt(ctx, a); err != nil {
+			return fmt.Errorf("insert attempt %d of task %s: %w", a.Attempt, t.ID(), err)
+		}
 	}
 	if idempotencyKey == nil {
 		return nil
@@ -46,7 +54,7 @@ func (r *Repo) Insert(ctx context.Context, t domaintasks.Task, idempotencyKey *s
 	sum := sha256.Sum256(t.Payload())
 	err := q.InsertIdempotencyKey(ctx, queries.InsertIdempotencyKeyParams{
 		TenantID:       defaultTenantID,
-		Handler:        t.Handler(),
+		Handler:        t.Handler().Name(),
 		IdempotencyKey: *idempotencyKey,
 		TaskID:         t.ID(),
 		PayloadHash:    sum[:],
@@ -60,14 +68,14 @@ func (r *Repo) Insert(ctx context.Context, t domaintasks.Task, idempotencyKey *s
 	return nil
 }
 
-// Get returns a task from repo by id.
+// Get returns a task from repo by id, with its attempt history.
 func (r *Repo) Get(ctx context.Context, id uuid.UUID) (domaintasks.Task, error) {
 	q := queries.New(r.resolver.Resolve(ctx))
 	row, err := q.GetTaskByID(ctx, id)
 	if err != nil {
 		return domaintasks.Task{}, fmt.Errorf("get task %s: %w", id, translate(err))
 	}
-	return toDomain(row)
+	return r.hydrate(ctx, q, row)
 }
 
 // GetByIdempotencyKey returns a task from repo by idempotency key.
@@ -77,7 +85,19 @@ func (r *Repo) GetByIdempotencyKey(ctx context.Context, key string) (domaintasks
 	if err != nil {
 		return domaintasks.Task{}, fmt.Errorf("get task by idempotency key: %w", translate(err))
 	}
-	return toDomain(row)
+	return r.hydrate(ctx, q, row)
+}
+
+// hydrate loads a task row's attempts and rebuilds the aggregate. Two queries
+// rather than a join: the attempt list is unbounded in principle and a join
+// would repeat every task column per attempt. Both run on the same DBTX, so
+// inside a transaction they see one consistent snapshot.
+func (r *Repo) hydrate(ctx context.Context, q *queries.Queries, row queries.Task) (domaintasks.Task, error) {
+	attempts, err := q.ListTaskAttempts(ctx, row.ID)
+	if err != nil {
+		return domaintasks.Task{}, fmt.Errorf("list attempts of task %s: %w", row.ID, translate(err))
+	}
+	return toDomain(row, attempts)
 }
 
 // translate maps driver errors to domain sentinels so no layer above this one

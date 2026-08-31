@@ -12,6 +12,61 @@ import (
 	"github.com/google/uuid"
 )
 
+const createAttempt = `-- name: CreateAttempt :one
+INSERT INTO task_attempts (
+    id, task_id, attempt, worker_id, status,
+    started_at, finished_at, last_heartbeat, error_class, error_message
+) VALUES (
+    $1, $2, $3, $4, $5,
+    $6, $7, $8, $9, $10
+)
+RETURNING id, task_id, attempt, worker_id, status, started_at, finished_at, last_heartbeat, progress_pct, error_class, error_message, error_stack
+`
+
+type CreateAttemptParams struct {
+	ID            uuid.UUID  `json:"id"`
+	TaskID        uuid.UUID  `json:"task_id"`
+	Attempt       int32      `json:"attempt"`
+	WorkerID      string     `json:"worker_id"`
+	Status        string     `json:"status"`
+	StartedAt     time.Time  `json:"started_at"`
+	FinishedAt    *time.Time `json:"finished_at"`
+	LastHeartbeat *time.Time `json:"last_heartbeat"`
+	ErrorClass    *string    `json:"error_class"`
+	ErrorMessage  *string    `json:"error_message"`
+}
+
+func (q *Queries) CreateAttempt(ctx context.Context, arg CreateAttemptParams) (TaskAttempt, error) {
+	row := q.db.QueryRow(ctx, createAttempt,
+		arg.ID,
+		arg.TaskID,
+		arg.Attempt,
+		arg.WorkerID,
+		arg.Status,
+		arg.StartedAt,
+		arg.FinishedAt,
+		arg.LastHeartbeat,
+		arg.ErrorClass,
+		arg.ErrorMessage,
+	)
+	var i TaskAttempt
+	err := row.Scan(
+		&i.ID,
+		&i.TaskID,
+		&i.Attempt,
+		&i.WorkerID,
+		&i.Status,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.LastHeartbeat,
+		&i.ProgressPct,
+		&i.ErrorClass,
+		&i.ErrorMessage,
+		&i.ErrorStack,
+	)
+	return i, err
+}
+
 const createTask = `-- name: CreateTask :one
 INSERT INTO tasks (
     id, idempotency_key, payload, handler,
@@ -164,4 +219,43 @@ func (q *Queries) InsertIdempotencyKey(ctx context.Context, arg InsertIdempotenc
 		arg.PayloadHash,
 	)
 	return err
+}
+
+const listTaskAttempts = `-- name: ListTaskAttempts :many
+SELECT id, task_id, attempt, worker_id, status, started_at, finished_at, last_heartbeat, progress_pct, error_class, error_message, error_stack FROM task_attempts WHERE task_id = $1 ORDER BY attempt
+`
+
+// Ordered by attempt so the aggregate rebuilds its history in the order it
+// happened; Task.finishOpenAttempt only ever looks at the last element.
+func (q *Queries) ListTaskAttempts(ctx context.Context, taskID uuid.UUID) ([]TaskAttempt, error) {
+	rows, err := q.db.Query(ctx, listTaskAttempts, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []TaskAttempt
+	for rows.Next() {
+		var i TaskAttempt
+		if err := rows.Scan(
+			&i.ID,
+			&i.TaskID,
+			&i.Attempt,
+			&i.WorkerID,
+			&i.Status,
+			&i.StartedAt,
+			&i.FinishedAt,
+			&i.LastHeartbeat,
+			&i.ProgressPct,
+			&i.ErrorClass,
+			&i.ErrorMessage,
+			&i.ErrorStack,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
