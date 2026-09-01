@@ -80,6 +80,11 @@ components:
   # reported as a notice rather than ignored.
   generic-cache: { in: generic/cache }
 
+  # Test-only leaf: the shared goroutine-leak check (plans/phase-1/01-p0,
+  # Step 2). Nothing in production imports it — only _test.go files do, and
+  # those are excluded above — so it is a leaf by omission, like generic-cache.
+  testutil: { in: testutil }
+
 deps:
   # The composition root is the one component allowed to see every layer at
   # once — that is what makes it the composition root.

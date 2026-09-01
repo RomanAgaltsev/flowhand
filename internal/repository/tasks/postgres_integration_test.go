@@ -72,6 +72,28 @@ func startPostgresWithMigrations(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
+// fakeCatalog stands in for the worker registry on the write path, the same
+// role it plays in mapper_test.go. Re-declared here because that file is in
+// the internal test package and this one is external.
+type fakeCatalog struct{}
+
+func (fakeCatalog) Has(string) bool { return true }
+
+// submitted builds a pending task the way the Commander does: through the
+// validating constructors, with the service layer's defaults for priority and
+// max_attempts.
+func submitted(t *testing.T, payload json.RawMessage) domaintasks.Task {
+	t.Helper()
+	handler, err := domaintasks.NewHandler("echo", fakeCatalog{})
+	require.NoError(t, err)
+	task, err := domaintasks.Submit(
+		uuid.Must(uuid.NewV7()), handler, 0, payload, 25,
+		time.Now().UTC().Truncate(time.Microsecond),
+	)
+	require.NoError(t, err)
+	return task
+}
+
 // TestRepo_InsertThenGet_PersistsHandler closes the gap Task L2's acceptance
 // named: every unit test in this package would still pass if `handler` were
 // dropped between the mapper and the database, because none of them touch a
@@ -81,17 +103,17 @@ func TestRepo_InsertThenGet_PersistsHandler(t *testing.T) {
 	repo := repotasks.New(txmgr.New(pool))
 	ctx := context.Background()
 
-	want := domaintasks.Submit(
-		uuid.Must(uuid.NewV7()), "echo", json.RawMessage(`{"msg":"hi"}`),
-		time.Now().UTC().Truncate(time.Microsecond),
-	)
+	want := submitted(t, json.RawMessage(`{"msg":"hi"}`))
 	require.NoError(t, repo.Insert(ctx, want, nil))
 
 	got, err := repo.Get(ctx, want.ID())
 	require.NoError(t, err)
 
 	assert.Equal(t, want.ID(), got.ID())
-	assert.Equal(t, "echo", got.Handler()) // the assertion no unit test can make
+	// The assertion no unit test can make: the handler name survives the
+	// round-trip. Compared as the value object D2 gave it, rebuilt through the
+	// same read-side constructor the mapper uses.
+	assert.Equal(t, domaintasks.HandlerFromPersistence("echo"), got.Handler())
 	assert.Equal(t, domaintasks.StatusPending, got.Status(), "status comes from the 00001 default")
 	assert.JSONEq(t, `{"msg":"hi"}`, string(got.Payload()))
 	assert.False(t, got.CreatedAt().IsZero(), "created_at comes from the 00001 default")
@@ -111,9 +133,7 @@ func TestRepo_DuplicateKeyIsErrConflict(t *testing.T) {
 	ctx := context.Background()
 	key := "k-1"
 
-	newTask := func() domaintasks.Task {
-		return domaintasks.Submit(uuid.Must(uuid.NewV7()), "echo", json.RawMessage(`{}`), time.Now().UTC())
-	}
+	newTask := func() domaintasks.Task { return submitted(t, json.RawMessage(`{}`)) }
 
 	require.NoError(t, repo.Insert(ctx, newTask(), &key))
 	require.ErrorIs(t, repo.Insert(ctx, newTask(), &key), domaintasks.ErrConflict)

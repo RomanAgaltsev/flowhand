@@ -60,7 +60,8 @@ func TestCreateTask_HappyPath(t *testing.T) {
 			created,
 			1,
 			created,
-		)}
+		),
+	}
 	h := api.NewHandler(cmd, &fakeQuerier{}, discardLogger())
 
 	resp, err := h.CreateTask(context.Background(), &oas.CreateTaskRequest{
@@ -95,7 +96,8 @@ func TestCreateTask_AbsentKeyBecomesEmptyString(t *testing.T) {
 			time.Now().UTC(),
 			1,
 			time.Now().UTC(),
-		)}
+		),
+	}
 	h := api.NewHandler(cmd, &fakeQuerier{}, discardLogger())
 
 	_, err := h.CreateTask(context.Background(), &oas.CreateTaskRequest{Handler: "echo"})
@@ -108,8 +110,10 @@ func TestCreateTask_AbsentKeyBecomesEmptyString(t *testing.T) {
 
 func TestCreateTask_MarshalsPayload(t *testing.T) {
 	cmd := &fakeCommander{
-		task: domaintasks.FromPersistence(uuid.Must(
-			uuid.NewV7()),
+		task: domaintasks.FromPersistence(
+			uuid.Must(
+				uuid.NewV7(),
+			),
 			domaintasks.StatusPending,
 			domaintasks.HandlerFromPersistence("echo"),
 			0,
@@ -119,7 +123,8 @@ func TestCreateTask_MarshalsPayload(t *testing.T) {
 			time.Now().UTC(),
 			1,
 			time.Now().UTC(),
-		)}
+		),
+	}
 	h := api.NewHandler(cmd, &fakeQuerier{}, discardLogger())
 
 	req := &oas.CreateTaskRequest{Handler: "echo"}
@@ -144,7 +149,8 @@ func TestCreateTask_UnmappedStatusIs500(t *testing.T) {
 			0,
 			time.Now().UTC(),
 			1,
-			time.Now().UTC()),
+			time.Now().UTC(),
+		),
 	}, &fakeQuerier{}, discardLogger())
 
 	_, err := h.CreateTask(context.Background(), &oas.CreateTaskRequest{Handler: "echo"})
@@ -162,7 +168,8 @@ func TestGetTask_HappyPath(t *testing.T) {
 				Status:    "pending",
 				Handler:   "echo",
 				CreatedAt: created,
-			}},
+			},
+		},
 		discardLogger(),
 	)
 
@@ -188,7 +195,8 @@ func TestGetTask_RejectsStatusOutsideThePublishedEnum(t *testing.T) {
 				ID:        uuid.Must(uuid.NewV7()),
 				Status:    "orphaned",
 				CreatedAt: time.Now().UTC(),
-			}},
+			},
+		},
 		discardLogger(),
 	)
 
