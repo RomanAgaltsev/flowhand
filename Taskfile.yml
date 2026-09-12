@@ -45,6 +45,19 @@ vars:
   BIN: bin/flowhand{{.EXE_EXT}}
   COMPOSE_FILE: deploy/compose/docker-compose.yml
 
+
+  # -race needs cgo, and cgo needs a C toolchain -- which this workstation has no
+  # gcc for, so the native race tasks cannot even build here. The :docker tasks
+  # run the identical gate in a Linux container, which is also the platform CI
+  # runs on. `task toolchain:check` reports which of them you can use.
+  GO_IMAGE: "golang:1.26"
+  DOCKER_RUN: >-
+    docker run --rm
+    -v "{{.ROOT_DIR | replace "\\" "/"}}:/src"
+    -v go-race-modcache:/go/pkg/mod
+    -v go-race-buildcache:/root/.cache/go-build
+    -w /src {{.GO_IMAGE}}
+
 tasks:
   formatters:install:
     desc: install gofumpt and gci
@@ -286,3 +299,21 @@ tasks:
     cmds:
       - docker compose -f {{.COMPOSE_FILE}} up -d --build flowhand-demo
       - echo "submit rate - Grafana Explore, Prometheus datasource - rate(flowhand_demo_submits_total[1m])"
+
+  test:docker:
+    desc: unit tests with the race detector, in a Linux container
+    cmds:
+      - "{{.DOCKER_RUN}} go test -race -count=1 ./..."
+
+  test:norace:
+    desc: unit tests WITHOUT the race detector -- a partial gate
+    cmds:
+      - echo "WARNING -- running without -race. This does NOT satisfy the gate."
+      - go test -count=1 ./...
+
+  toolchain:check:
+    desc: report which of test / test:docker / test:norace can run here
+    silent: true
+    cmds:
+      - if command -v gcc >/dev/null 2>&1; then echo "C toolchain -- $(gcc --version | head -1)"; else echo "C toolchain -- none; the native race task cannot build, use the :docker one"; fi
+      - if docker version >/dev/null 2>&1; then echo "docker -- available"; else echo "docker -- none; only a no-race run is left, and it does NOT satisfy the gate"; fi
