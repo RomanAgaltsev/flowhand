@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -86,6 +87,76 @@ func (r *Repo) GetByIdempotencyKey(ctx context.Context, key string) (domaintasks
 		return domaintasks.Task{}, fmt.Errorf("get task by idempotency key: %w", translate(err))
 	}
 	return r.hydrate(ctx, q, row)
+}
+
+// GetForUpdate returns the task with its attempt history, row-locked until the
+// surrounding transaction ends. Outside a transaction the lock evaporates when
+// the statement returns - the port documents this. The repo cannot enforce it.
+func (r *Repo) GetForUpdate(ctx context.Context, id uuid.UUID) (domaintasks.Task, error) {
+	q := queries.New(r.resolver.Resolve(ctx))
+	row, err := q.GetTaskForUpdate(ctx, id)
+	if err != nil {
+		return domaintasks.Task{}, fmt.Errorf("get task %s for update: %w", id, translate(err))
+	}
+	return r.hydrate(ctx, q, row)
+}
+
+// PersistTransition writes the attempt row and the fenced status update.
+// fenceEpoch is the epoch stamped AT DISPATCH and echoed by the worker - never
+// a fresh lookup. Returns rows affected by the fenced UPDATE:
+// 0 means the epoch moved and the caller must abort WITHOUT emitting events.
+// On 0 the attempt row is skipped too: no audit record for a write we did
+// not win.
+func (r *Repo) PersistTransition(ctx context.Context, t domaintasks.Task, fenceEpoch int64) (int64, error) {
+	q := queries.New(r.resolver.Resolve(ctx))
+
+	rows, err := q.UpdateTaskStatus(ctx, queries.UpdateTaskStatusParams{
+		ID:         t.ID(),
+		Status:     string(t.Status()),
+		EarliestAt: t.EarliestAt(),
+		Attempt:    int32(t.AttemptCount()),
+		LeaseEpoch: &fenceEpoch,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("persist transition of task %s: %w", t.ID(), err)
+	}
+	if rows == 0 {
+		return 0, nil // fence rejected, caller branches on this
+	}
+
+	// The transition touched only the LAST attempt (Start appends one,
+	// finishOpenAttempt closes one). Write exactly that row.
+	if attempts := t.Attempts(); len(attempts) > 0 {
+		n := int32(len(attempts))
+		last := attempts[n-1]
+		if err := q.UpsertAttempt(ctx, queries.UpsertAttemptParams{
+			ID:            last.ID(),
+			TaskID:        t.ID(),
+			Attempt:       n,
+			WorkerID:      last.WorkerID(),
+			Status:        string(last.Status()),
+			StartedAt:     last.StartedAt(),
+			FinishedAt:    last.FinishedAt(),
+			LastHeartbeat: last.LastHeartbeat(),
+			ErrorClass:    ref(last.ErrorClass()),
+			ErrorMessage:  ref(last.ErrorMessage()),
+		}); err != nil {
+			return rows, fmt.Errorf("upsert attempt %d of task %s: %w", n, t.ID(), err)
+		}
+	}
+	return rows, nil
+}
+
+// errNotImplementedCE6 keeps the ports complete before Part C exists; the
+// fenced, ceiling-bounded SQL lands with CE6.
+var errNotImplementedCE6 = errors.New("not implemented: lands with CE6")
+
+func (r *Repo) ExtendLease(ctx context.Context, id uuid.UUID, until time.Time, fenceEpoch int64, ceiling time.Duration) (int64, error) {
+	return 0, errNotImplementedCE6
+}
+
+func (r *Repo) Heartbeat(ctx context.Context, taskID uuid.UUID, progress *float32, now time.Time) error {
+	return errNotImplementedCE6
 }
 
 // hydrate loads a task row's attempts and rebuilds the aggregate. Two queries

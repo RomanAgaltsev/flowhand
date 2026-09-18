@@ -11,14 +11,35 @@ import (
 )
 
 type Querier interface {
+	// One round trip for N events. This sits inside the same transaction as the
+	// state change, so its latency is lock-hold time on the hot tasks row.
+	// sent/created_at take their column defaults; envelope_ver comes from
+	// domain.EnvelopeVersion on the Go side (the column is the one source).
+	AppendOutboxBatch(ctx context.Context, arg []AppendOutboxBatchParams) *AppendOutboxBatchBatchResults
 	CreateAttempt(ctx context.Context, arg CreateAttemptParams) (TaskAttempt, error)
 	CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error)
 	GetTaskByID(ctx context.Context, id uuid.UUID) (Task, error)
 	GetTaskByIdempotencyKey(ctx context.Context, idempotencyKey *string) (Task, error)
+	// Row-locks for a read-modify-write. Only meaningful inside a transaction:
+	// on the bare pool the lock evaporates the moment the statement returns.
+	GetTaskForUpdate(ctx context.Context, id uuid.UUID) (Task, error)
 	InsertIdempotencyKey(ctx context.Context, arg InsertIdempotencyKeyParams) error
 	// Ordered by attempt so the aggregate rebuilds its history in the order it
 	// happened; Task.finishOpenAttempt only ever looks at the last element.
 	ListTaskAttempts(ctx context.Context, taskID uuid.UUID) ([]TaskAttempt, error)
+	// The fenced status write. :execrows is load-bearing: the row count IS the
+	// fence result - 0 means the stamped lease_eposh no longer matches, ownership
+	// moved and the caller must abort without emitting events.
+	// lease_epoch in NULLable (never dispatched). NULL never matches, so an
+	// unleased row can never be transitioned through this query - by design.
+	// A terminal status here fires trg_tasks_archive, which moves the row out of
+	// tasks within this same statement.
+	UpdateTaskStatus(ctx context.Context, arg UpdateTaskStatusParams) (int64, error)
+	// The attempt row, written by PersistTransition: INSERT when the transition
+	// opened the attempt (dispatch), UPDATE when it closed it (result).
+	// On conflict only the lifecycle columns are touched: started_at, worker_id,
+	// last_heartbeat and progress_pct belong to dispatch and heartbeats.
+	UpsertAttempt(ctx context.Context, arg UpsertAttemptParams) error
 }
 
 var _ Querier = (*Queries)(nil)

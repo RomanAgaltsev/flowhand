@@ -2,6 +2,7 @@ package tasks
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"unicode/utf8"
 )
@@ -89,6 +90,20 @@ func NewHandler(name string, cat HandlerCatalog) (Handler, error) {
 // Name returns Handler's name as a string.
 func (h Handler) Name() string {
 	return h.name
+}
+
+// MarshalJSON publishes the handler as its bare name - events are a published
+// format (outbox payload -> Kafka) and "{}" would lose the name entirely.
+func (h Handler) MarshalJSON() ([]byte, error) { return json.Marshal(h.name) }
+
+// UnmarshalJSON is MarshalJSON's inverse, for consumers rebuilding events.
+func (h *Handler) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+	h.name = s
+	return nil
 }
 
 // HandlerCatalog is declared HERE, in the domain, not in the worker package that

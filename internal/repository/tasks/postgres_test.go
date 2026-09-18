@@ -6,3 +6,4 @@ import (
 )
 
 var _ task.TasksRepo = (*repotasks.Repo)(nil)
+var _ task.AttemptsRepo = (*repotasks.Repo)(nil) // same concrete type, second port

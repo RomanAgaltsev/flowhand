@@ -5,6 +5,7 @@ package tasks_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 
 	"github.com/RomanAgaltsev/flowhand/internal/config"
 	domaintasks "github.com/RomanAgaltsev/flowhand/internal/domain/tasks"
+	"github.com/RomanAgaltsev/flowhand/internal/repository/outbox"
 	repotasks "github.com/RomanAgaltsev/flowhand/internal/repository/tasks"
 	"github.com/RomanAgaltsev/flowhand/internal/storage"
 	"github.com/RomanAgaltsev/flowhand/internal/storage/txmgr"
@@ -155,4 +157,117 @@ func TestRepo_GetMissingIsErrNotFound(t *testing.T) {
 
 	_, err = repo.GetByIdempotencyKey(context.Background(), "never-used")
 	require.ErrorIs(t, err, domaintasks.ErrNotFound)
+}
+
+// TestRepo_PersistTransition_StaleEpochReturnsZero: simulate a claim (stamp
+// lease_epoch=1, status=running), transition the aggregate, then fence on a
+// stale epoch 99 — the epoch a reclaim would have bumped past us.
+func TestRepo_PersistTransition_StaleEpochReturnsZero(t *testing.T) {
+	pool := startPostgresWithMigrations(t)
+	repo := repotasks.New(txmgr.New(pool))
+	ctx := context.Background()
+
+	tt := submitted(t, json.RawMessage(`{}`))
+	require.NoError(t, repo.Insert(ctx, tt, nil))
+	_, err := pool.Exec(ctx,
+		`UPDATE tasks SET status='running', worker_id='w1', started_at=now(), lease_epoch=1 WHERE id=$1`, tt.ID())
+	require.NoError(t, err)
+
+	got, err := repo.GetForUpdate(ctx, tt.ID())
+	require.NoError(t, err)
+	require.NoError(t, got.ScheduleRetry("timeout", "boom",
+		time.Now().Add(time.Minute), time.Now().UTC()))
+
+	rows, err := repo.PersistTransition(ctx, got, 99) // stale fence
+	require.NoError(t, err)
+	assert.Zero(t, rows, "stale epoch must fence the write out")
+
+	after, err := repo.Get(ctx, tt.ID())
+	require.NoError(t, err)
+	assert.Equal(t, domaintasks.StatusRunning, after.Status(), "row must be untouched")
+}
+
+// poisonEvent fails json.Marshal honestly: an exported channel field. This
+// exercises the REAL error path in encodeEnvelope — proving the composition
+// rolls back, not that a mock returned an error.
+type poisonEvent struct {
+	TaskID uuid.UUID
+	Ch     chan struct{} // exported: encoding/json refuses channels
+	At     time.Time
+}
+
+func (poisonEvent) EventName() string        { return "task.poison.v1" }
+func (e poisonEvent) OccurredAt() time.Time  { return e.At }
+func (e poisonEvent) AggregateID() uuid.UUID { return e.TaskID }
+
+func TestInsertAndAppendAreAtomic(t *testing.T) {
+	pool := startPostgresWithMigrations(t)
+	txm := txmgr.New(pool)
+	tasksRepo := repotasks.New(txm)
+	outboxRepo := outbox.New(txm)
+	ctx := context.Background()
+
+	t.Run("commit makes both visible", func(t *testing.T) {
+		tt := submitted(t, json.RawMessage(`{"msg":"hi"}`))
+		require.NoError(t, txm.WithinTx(ctx, func(ctx context.Context) error {
+			if err := tasksRepo.Insert(ctx, tt, nil); err != nil {
+				return err
+			}
+			return outboxRepo.Append(ctx, domaintasks.NewSubmitted(tt, time.Now().UTC()))
+		}))
+
+		_, err := tasksRepo.Get(ctx, tt.ID())
+		require.NoError(t, err)
+		var n int
+		require.NoError(t, pool.QueryRow(ctx,
+			`SELECT count(*) FROM outbox_events WHERE aggregate_id=$1`, tt.ID()).Scan(&n))
+		assert.Equal(t, 1, n)
+	})
+
+	t.Run("append failure rolls back the task row", func(t *testing.T) {
+		tt := submitted(t, json.RawMessage(`{}`))
+		err := txm.WithinTx(ctx, func(ctx context.Context) error {
+			if err := tasksRepo.Insert(ctx, tt, nil); err != nil {
+				return err
+			}
+			return outboxRepo.Append(ctx,
+				domaintasks.NewSubmitted(tt, time.Now().UTC()),
+				poisonEvent{TaskID: tt.ID(), At: time.Now().UTC()},
+			)
+		})
+		require.ErrorContains(t, err, "encode task.poison.v1")
+
+		_, gerr := tasksRepo.Get(ctx, tt.ID())
+		require.ErrorIs(t, gerr, domaintasks.ErrNotFound, "task row must not exist")
+		var n int
+		require.NoError(t, pool.QueryRow(ctx,
+			`SELECT count(*) FROM outbox_events WHERE aggregate_id=$1`, tt.ID()).Scan(&n))
+		assert.Zero(t, n)
+	})
+
+	// The poison case above fails BEFORE any outbox SQL runs, so it cannot tell
+	// resolver-bound and self-transacting implementations apart. This one fails
+	// AFTER the batch has landed: if Append resolved the ambient transaction,
+	// its rows die with the outer rollback; if it opened its own transaction,
+	// they survive it. This is the subtest the T2 red-run proof turns red.
+	t.Run("failure after append rolls both back", func(t *testing.T) {
+		tt := submitted(t, json.RawMessage(`{}`))
+		err := txm.WithinTx(ctx, func(ctx context.Context) error {
+			if err := tasksRepo.Insert(ctx, tt, nil); err != nil {
+				return err
+			}
+			if err := outboxRepo.Append(ctx, domaintasks.NewSubmitted(tt, time.Now().UTC())); err != nil {
+				return err
+			}
+			return errors.New("boom after append")
+		})
+		require.ErrorContains(t, err, "boom after append")
+
+		_, gerr := tasksRepo.Get(ctx, tt.ID())
+		require.ErrorIs(t, gerr, domaintasks.ErrNotFound, "task row must not exist")
+		var n int
+		require.NoError(t, pool.QueryRow(ctx,
+			`SELECT count(*) FROM outbox_events WHERE aggregate_id=$1`, tt.ID()).Scan(&n))
+		assert.Zero(t, n, "outbox rows must roll back with the outer transaction")
+	})
 }

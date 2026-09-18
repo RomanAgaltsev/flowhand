@@ -55,7 +55,7 @@ var serverCmd = &cobra.Command{
 		// Bottom-up: pool -> tx manager (Resolver+TxRunner) -> repos -> service -> handler.
 		txm := txmgr.New(pool)
 		tasksRepo := repotasks.New(txm)
-		outboxRepo := outbox.New()
+		outboxRepo := outbox.New(txm)
 
 		h := api.NewHandler(
 			task.NewCommander(tasksRepo, outboxRepo, txm, acceptAnyHandler{}),

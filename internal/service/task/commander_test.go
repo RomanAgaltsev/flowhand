@@ -49,6 +49,24 @@ func (f *fakeTasksRepo) GetByIdempotencyKey(_ context.Context, _ string) (domain
 	return f.stored, f.storedErr
 }
 
+// The T2 port growth in action: the fake must satisfy the whole interface even
+// though Submit only calls Insert/Get/GetByIdempotencyKey. They record too, so
+// a future test that exercises one fails on an assertion, not on compilation.
+func (f *fakeTasksRepo) GetForUpdate(_ context.Context, _ uuid.UUID) (domaintasks.Task, error) {
+	f.rec.add("get_for_update")
+	return f.stored, f.storedErr
+}
+
+func (f *fakeTasksRepo) PersistTransition(_ context.Context, _ domaintasks.Task, _ int64) (int64, error) {
+	f.rec.add("persist_transition")
+	return 1, nil // 1 row: the fence passed
+}
+
+func (f *fakeTasksRepo) ExtendLease(_ context.Context, _ uuid.UUID, _ time.Time, _ int64, _ time.Duration) (int64, error) {
+	f.rec.add("extend_lease")
+	return 1, nil
+}
+
 type fakeOutbox struct {
 	rec    *recorder
 	err    error

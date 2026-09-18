@@ -42,6 +42,10 @@ func (e Submitted) EventName() string { return "task.submitted.v1" }
 // OccurredAt returns the instant the transition happened.
 func (e Submitted) OccurredAt() time.Time { return e.At }
 
+// AggregateID returns the aggregate this event is about: the outbox's
+// aggregate_id column and the Kafka partition key.
+func (e Submitted) AggregateID() uuid.UUID { return e.TaskID }
+
 // compile-time proof the aggregate's events satisfy the domain contract.
 var _ domain.Event = Submitted{}
 
@@ -68,6 +72,10 @@ func (e Started) EventName() string { return "task.started.v1" }
 
 // OccurredAt returns the instant the transition happened.
 func (e Started) OccurredAt() time.Time { return e.At }
+
+// AggregateID returns the aggregate this event is about: the outbox's
+// aggregate_id column and the Kafka partition key.
+func (e Started) AggregateID() uuid.UUID { return e.TaskID }
 
 // compile-time proof the aggregate's events satisfy the domain contract.
 var _ domain.Event = Started{}
@@ -98,6 +106,10 @@ func (e Succeeded) EventName() string { return "task.succeeded.v1" }
 
 // OccurredAt returns the instant the transition happened.
 func (e Succeeded) OccurredAt() time.Time { return e.At }
+
+// AggregateID returns the aggregate this event is about: the outbox's
+// aggregate_id column and the Kafka partition key.
+func (e Succeeded) AggregateID() uuid.UUID { return e.TaskID }
 
 // compile-time proof the aggregate's events satisfy the domain contract.
 var _ domain.Event = Succeeded{}
@@ -134,6 +146,10 @@ func (e Failed) EventName() string { return "task.failed.v1" }
 // OccurredAt returns the instant the transition happened.
 func (e Failed) OccurredAt() time.Time { return e.At }
 
+// AggregateID returns the aggregate this event is about: the outbox's
+// aggregate_id column and the Kafka partition key.
+func (e Failed) AggregateID() uuid.UUID { return e.TaskID }
+
 // compile-time proof the aggregate's events satisfy the domain contract.
 var _ domain.Event = Failed{}
 
@@ -168,6 +184,10 @@ func (e RetryScheduled) EventName() string { return "task.retry_scheduled.v1" }
 // OccurredAt returns the instant the transition happened.
 func (e RetryScheduled) OccurredAt() time.Time { return e.At }
 
+// AggregateID returns the aggregate this event is about: the outbox's
+// aggregate_id column and the Kafka partition key.
+func (e RetryScheduled) AggregateID() uuid.UUID { return e.TaskID }
+
 // compile-time proof the aggregate's events satisfy the domain contract.
 var _ domain.Event = RetryScheduled{}
 
@@ -198,6 +218,10 @@ func (e Cancelled) EventName() string { return "task.cancelled.v1" }
 
 // OccurredAt returns the instant the transition happened.
 func (e Cancelled) OccurredAt() time.Time { return e.At }
+
+// AggregateID returns the aggregate this event is about: the outbox's
+// aggregate_id column and the Kafka partition key.
+func (e Cancelled) AggregateID() uuid.UUID { return e.TaskID }
 
 // compile-time proof the aggregate's events satisfy the domain contract.
 var _ domain.Event = Cancelled{}

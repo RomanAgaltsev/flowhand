@@ -1,6 +1,10 @@
 package domain
 
-import "time"
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
 
 // Event is anything an aggregate emits when its state changes. The same
 // value is serialized into outbox_events.payload (see internal/repository/
@@ -8,6 +12,12 @@ import "time"
 type Event interface {
 	EventName() string // stable wire identifier, e.g. "task.submitted.v1"
 	OccurredAt() time.Time
+
+	// AggregateID answers "which aggregate am I about?". It populates
+	// outbox_events.aggregate_id - the Kafka partition key that delivers
+	// per-aggregate ordering. NOT NULL there,
+	// so an event that cannot answer this cannot be published.
+	AggregateID() uuid.UUID
 }
 
 // EnvelopeVersion is the schema version of the envelope wrapping every Event

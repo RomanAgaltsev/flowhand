@@ -197,6 +197,39 @@ func (q *Queries) GetTaskByIdempotencyKey(ctx context.Context, idempotencyKey *s
 	return i, err
 }
 
+const getTaskForUpdate = `-- name: GetTaskForUpdate :one
+SELECT id, idempotency_key, payload, status, created_at, handler, tenant_id, priority, earliest_at, attempt, max_attempts, shard_id, cancel_requested, updated_at, started_at, worker_id, lease_until, lease_epoch, trace_id FROM tasks WHERE id = $1 FOR UPDATE
+`
+
+// Row-locks for a read-modify-write. Only meaningful inside a transaction:
+// on the bare pool the lock evaporates the moment the statement returns.
+func (q *Queries) GetTaskForUpdate(ctx context.Context, id uuid.UUID) (Task, error) {
+	row := q.db.QueryRow(ctx, getTaskForUpdate, id)
+	var i Task
+	err := row.Scan(
+		&i.ID,
+		&i.IdempotencyKey,
+		&i.Payload,
+		&i.Status,
+		&i.CreatedAt,
+		&i.Handler,
+		&i.TenantID,
+		&i.Priority,
+		&i.EarliestAt,
+		&i.Attempt,
+		&i.MaxAttempts,
+		&i.ShardID,
+		&i.CancelRequested,
+		&i.UpdatedAt,
+		&i.StartedAt,
+		&i.WorkerID,
+		&i.LeaseUntil,
+		&i.LeaseEpoch,
+		&i.TraceID,
+	)
+	return i, err
+}
+
 const insertIdempotencyKey = `-- name: InsertIdempotencyKey :exec
 INSERT INTO idempotency_keys (tenant_id, handler, idempotency_key, task_id, payload_hash)
 VALUES ($1, $2, $3, $4, $5)
@@ -258,4 +291,90 @@ func (q *Queries) ListTaskAttempts(ctx context.Context, taskID uuid.UUID) ([]Tas
 		return nil, err
 	}
 	return items, nil
+}
+
+const updateTaskStatus = `-- name: UpdateTaskStatus :execrows
+UPDATE tasks
+SET status = $2, earliest_at = $3, attempt = $4, updated_at = now()
+WHERE id = $1 AND lease_epoch = $5
+`
+
+type UpdateTaskStatusParams struct {
+	ID         uuid.UUID `json:"id"`
+	Status     string    `json:"status"`
+	EarliestAt time.Time `json:"earliest_at"`
+	Attempt    int32     `json:"attempt"`
+	LeaseEpoch *int64    `json:"lease_epoch"`
+}
+
+// The fenced status write. :execrows is load-bearing: the row count IS the
+// fence result - 0 means the stamped lease_eposh no longer matches, ownership
+// moved and the caller must abort without emitting events.
+// lease_epoch in NULLable (never dispatched). NULL never matches, so an
+// unleased row can never be transitioned through this query - by design.
+// A terminal status here fires trg_tasks_archive, which moves the row out of
+// tasks within this same statement.
+func (q *Queries) UpdateTaskStatus(ctx context.Context, arg UpdateTaskStatusParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateTaskStatus,
+		arg.ID,
+		arg.Status,
+		arg.EarliestAt,
+		arg.Attempt,
+		arg.LeaseEpoch,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const upsertAttempt = `-- name: UpsertAttempt :exec
+INSERT INTO task_attempts (
+    id, task_id, attempt, worker_id, status,
+    started_at, finished_at, last_heartbeat, progress_pct,
+    error_class, error_message, error_stack
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+ON CONFLICT (id) DO UPDATE SET
+    status        = EXCLUDED.status,
+    finished_at   = EXCLUDED.finished_at,
+    error_class   = EXCLUDED.error_class,
+    error_message = EXCLUDED.error_message,
+    error_stack   = EXCLUDED.error_stack
+`
+
+type UpsertAttemptParams struct {
+	ID            uuid.UUID  `json:"id"`
+	TaskID        uuid.UUID  `json:"task_id"`
+	Attempt       int32      `json:"attempt"`
+	WorkerID      string     `json:"worker_id"`
+	Status        string     `json:"status"`
+	StartedAt     time.Time  `json:"started_at"`
+	FinishedAt    *time.Time `json:"finished_at"`
+	LastHeartbeat *time.Time `json:"last_heartbeat"`
+	ProgressPct   *float32   `json:"progress_pct"`
+	ErrorClass    *string    `json:"error_class"`
+	ErrorMessage  *string    `json:"error_message"`
+	ErrorStack    *string    `json:"error_stack"`
+}
+
+// The attempt row, written by PersistTransition: INSERT when the transition
+// opened the attempt (dispatch), UPDATE when it closed it (result).
+// On conflict only the lifecycle columns are touched: started_at, worker_id,
+// last_heartbeat and progress_pct belong to dispatch and heartbeats.
+func (q *Queries) UpsertAttempt(ctx context.Context, arg UpsertAttemptParams) error {
+	_, err := q.db.Exec(ctx, upsertAttempt,
+		arg.ID,
+		arg.TaskID,
+		arg.Attempt,
+		arg.WorkerID,
+		arg.Status,
+		arg.StartedAt,
+		arg.FinishedAt,
+		arg.LastHeartbeat,
+		arg.ProgressPct,
+		arg.ErrorClass,
+		arg.ErrorMessage,
+		arg.ErrorStack,
+	)
+	return err
 }

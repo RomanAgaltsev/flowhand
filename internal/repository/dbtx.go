@@ -13,8 +13,10 @@ type DBTX interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
-	// SendBatch and CopyFrom omitted from the interface. Consumers that need
-	// them take a concrete *pgxpool.Pool instead.
+	// SendBatch is what sqlc's :batchexec annotation calls (outbox append).
+	// Both *pgxpool.Pool and pgx.Tx implement it, so the resolver still hands
+	// back either. CopyFrom stays excluded: pgx.Tx does not have it.
+	SendBatch(ctx context.Context, b *pgx.Batch) pgx.BatchResults
 }
 
 // Resolver returns the DBTX bound to ctx if a transaction is active,
