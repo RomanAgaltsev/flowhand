@@ -1,18 +1,18 @@
 version: "3"
 
 vars:
-  GO_VERSION: '1.26.5'
-  GOLANGCI_LINT_VERSION: 'v2.13.1'
+  GO_VERSION: '1.27.3'
+  GOLANGCI_LINT_VERSION: 'v2.15.0'
   GCI_VERSION: 'v0.14.0'
-  GOFUMPT_VERSION: 'v0.11.0'
-  BUF_VERSION: '1.71.0'
-  PROTOC_GEN_GO_VERSION: 'v1.36.11'
-  PROTOC_GEN_GO_GRPC_VERSION: 'v1.6.1'
-  OGEN_VERSION: 'v1.23.0'
-  GOOSE_VERSION: 'v3.27.2'
+  GOFUMPT_VERSION: 'v0.12.0'
+  BUF_VERSION: '1.74.0'
+  PROTOC_GEN_GO_VERSION: 'v1.36.12'
+  PROTOC_GEN_GO_GRPC_VERSION: 'v1.6.2'
+  OGEN_VERSION: 'v1.24.0'
+  GOOSE_VERSION: 'v3.29.0'
   SQLC_VERSION: 'v1.31.1'
-  GOVULNCHECK_VERSION: 'v1.1.4'
-  GO_ARCH_LINT_VERSION: 'v1.17.0'
+  GOVULNCHECK_VERSION: 'v1.9.0'
+  GO_ARCH_LINT_VERSION: 'v1.19.0'
 
   BIN_DIR: '{{.ROOT_DIR | replace "\\" "/"}}/bin'
   EXE_EXT: '{{if eq OS "windows"}}.exe{{end}}'
@@ -50,7 +50,7 @@ vars:
   # gcc for, so the native race tasks cannot even build here. The :docker tasks
   # run the identical gate in a Linux container, which is also the platform CI
   # runs on. `task toolchain:check` reports which of them you can use.
-  GO_IMAGE: "golang:1.26"
+  GO_IMAGE: "golang:1.27"
   DOCKER_RUN: >-
     docker run --rm
     -v "{{.ROOT_DIR | replace "\\" "/"}}:/src"
