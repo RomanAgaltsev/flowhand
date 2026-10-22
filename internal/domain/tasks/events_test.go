@@ -1,6 +1,7 @@
 package tasks
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -11,115 +12,188 @@ import (
 	"github.com/RomanAgaltsev/flowhand/internal/domain"
 )
 
+// goldenAt, goldenID and goldenTask are fixed so the payload tests below can
+// compare exact bytes. Nothing here may use time.Now or a random UUID.
+var (
+	goldenAt = time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	goldenID = uuid.MustParse("018f1e60-0000-7000-8000-000000000001")
+)
+
+func goldenTask(t *testing.T) Task {
+	t.Helper()
+	task, err := Submit(goldenID, Handler{name: "echo"}, 3, json.RawMessage(`{}`), 5, goldenAt)
+	require.NoError(t, err)
+	drain(&task)
+	return task
+}
+
 // TestEventNames pins the exact six wire names.
 //
 // These are a published contract: consumers in other services subscribe by
-// this string. A typo is not a compile error — it is a silently-dropped
-// consumer — so the strings are written out here as literals rather than
+// this string. A typo is not a compile error - it is a silently-dropped
+// consumer - so the strings are written out here as literals rather than
 // derived from the constants they are testing.
 func TestEventNames(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		ev   domain.Event
+		kind Kind
 		want string
 	}{
-		{"submitted", Submitted{}, "task.submitted.v1"},
-		{"started", Started{}, "task.started.v1"},
-		{"succeeded", Succeeded{}, "task.succeeded.v1"},
-		{"failed", Failed{}, "task.failed.v1"},
-		{"retry_scheduled", RetryScheduled{}, "task.retry_scheduled.v1"},
-		{"cancelled", Cancelled{}, "task.cancelled.v1"},
+		{"submitted", KindSubmitted, "task.submitted.v1"},
+		{"started", KindStarted, "task.started.v1"},
+		{"succeeded", KindSucceeded, "task.succeeded.v1"},
+		{"failed", KindFailed, "task.failed.v1"},
+		{"retry_scheduled", KindRetryScheduled, "task.retry_scheduled.v1"},
+		{"cancelled", KindCancelled, "task.cancelled.v1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, tc.ev.EventName())
-			require.Regexp(t, `^task\.[a-z_]+\.v\d+$`, tc.ev.EventName())
+			require.Equal(t, tc.want, Event{kind: tc.kind}.EventName())
+			require.Regexp(t, `^task\.[a-z_]+\.v\d+$`, Event{kind: tc.kind}.EventName())
 		})
 	}
 }
 
-// The wire names are global and the Go type names are local, on purpose. The
-// wire name keeps the task. prefix because it travels to other services; the Go
-// type drops it because tasks.TaskSubmitted is the stutter revive exists to
-// prevent. This test fails if someone "fixes" the asymmetry in either
-// direction.
-func TestEventNamesAreDistinct(t *testing.T) {
+// TestEveryKindHasAName walks the whole Kind range rather than a hand-written
+// list, so a seventh Kind added without a name in EventName's switch fails here
+// even if someone bypasses the exhaustive linter. This is the test the six
+// independent event types could not have.
+func TestEveryKindHasAName(t *testing.T) {
 	seen := map[string]bool{}
-	for _, ev := range []domain.Event{
-		Submitted{}, Started{}, Succeeded{}, Failed{}, RetryScheduled{}, Cancelled{},
-	} {
-		name := ev.EventName()
+	for k := KindSubmitted; k <= KindCancelled; k++ {
+		name := Event{kind: k}.EventName()
+		require.NotEmpty(t, name, "Kind %d has no wire name", k)
 		require.False(t, seen[name], "duplicate wire name %q", name)
 		seen[name] = true
 	}
 	assert.Len(t, seen, 6)
 }
 
-// OccurredAt must report the instant the transition happened, which is the At
-// field every constructor stamps — not time.Now() read at marshal time. A
+// The zero Kind is invalid, and both the name and the payload must say so
+// rather than silently publishing a nameless event.
+func TestZeroKindIsRejected(t *testing.T) {
+	assert.Empty(t, Event{}.EventName())
+
+	_, err := json.Marshal(Event{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown kind 0")
+}
+
+// OccurredAt must report the instant the transition happened, which is the at
+// field every constructor stamps - not time.Now() read at marshal time. A
 // consumer orders on this value.
 func TestOccurredAtReportsTheStampedInstant(t *testing.T) {
-	at := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
-	task := pendingTask(t)
+	task := goldenTask(t)
 
 	for _, tc := range []struct {
 		name string
 		ev   domain.Event
 	}{
-		{"submitted", NewSubmitted(task, at)},
-		{"started", NewStarted(task, at)},
-		{"succeeded", NewSucceeded(task, nil, at)},
-		{"failed", NewFailed(task, "boom", "exploded", at)},
-		{"retry_scheduled", NewRetryScheduled(task, at.Add(time.Minute), at)},
-		{"cancelled", NewCancelled(task, "user asked", at)},
+		{"submitted", NewSubmitted(task, goldenAt)},
+		{"started", NewStarted(task, goldenAt)},
+		{"succeeded", NewSucceeded(task, nil, goldenAt)},
+		{"failed", NewFailed(task, "boom", "exploded", goldenAt)},
+		{"retry_scheduled", NewRetryScheduled(task, goldenAt.Add(time.Minute), goldenAt)},
+		{"cancelled", NewCancelled(task, "user asked", goldenAt)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.True(t, at.Equal(tc.ev.OccurredAt()))
+			assert.True(t, goldenAt.Equal(tc.ev.OccurredAt()))
+			assert.Equal(t, task.ID(), tc.ev.AggregateID())
 		})
 	}
 }
 
 // Every constructor must copy the aggregate's identifying fields onto the
 // event. A field that is declared but never populated ships a zero value to
-// every consumer — which is what RetryScheduled.Attempt did before it was
+// every consumer - which is what RetryScheduled.Attempt did before it was
 // wired up, making retry 1 indistinguishable from retry 5.
 func TestEventsCarryTheAggregatesFields(t *testing.T) {
-	now := time.Now().UTC()
-	task := pendingTask(t)
+	task := goldenTask(t)
 
 	t.Run("submitted", func(t *testing.T) {
-		ev := NewSubmitted(task, now)
-		assert.Equal(t, task.ID(), ev.TaskID)
-		assert.Equal(t, task.Handler(), ev.Handler)
-		assert.Equal(t, task.Priority(), ev.Priority)
+		ev := NewSubmitted(task, goldenAt)
+		assert.Equal(t, task.ID(), ev.taskID)
+		assert.Equal(t, task.Handler(), ev.handler)
+		assert.Equal(t, task.Priority(), ev.priority)
 	})
 
 	t.Run("started", func(t *testing.T) {
-		ev := NewStarted(task, now)
-		assert.Equal(t, task.ID(), ev.TaskID)
-		assert.Equal(t, task.Handler(), ev.Handler)
-		assert.Equal(t, task.Priority(), ev.Priority)
+		ev := NewStarted(task, goldenAt)
+		assert.Equal(t, task.ID(), ev.taskID)
+		assert.Equal(t, task.Handler(), ev.handler)
+		assert.Equal(t, task.Priority(), ev.priority)
 	})
 
 	t.Run("retry_scheduled carries which attempt failed", func(t *testing.T) {
 		running := task
-		require.NoError(t, running.Start(uuid.Must(uuid.NewV7()), "w-1", now.Add(time.Minute), now))
+		require.NoError(t, running.Start(uuid.Must(uuid.NewV7()), "w-1", goldenAt.Add(time.Minute), goldenAt))
 
-		nextAt := now.Add(30 * time.Second)
-		ev := NewRetryScheduled(running, nextAt, now)
+		nextAt := goldenAt.Add(30 * time.Second)
+		ev := NewRetryScheduled(running, nextAt, goldenAt)
 
-		assert.Equal(t, uint8(1), ev.Attempt, "must report the attempt that just failed")
-		assert.True(t, nextAt.Equal(ev.NextAt))
-		assert.Equal(t, running.Priority(), ev.Priority)
+		assert.Equal(t, uint8(1), ev.attempt, "must report the attempt that just failed")
+		assert.True(t, nextAt.Equal(ev.nextAt))
+		assert.Equal(t, running.Priority(), ev.priority)
 	})
 
 	t.Run("failed carries the reason", func(t *testing.T) {
-		ev := NewFailed(task, "timeout", "deadline exceeded", now)
-		assert.Equal(t, "timeout", ev.ErrorClass)
-		assert.Equal(t, "deadline exceeded", ev.ErrorMessage)
+		ev := NewFailed(task, "timeout", "deadline exceeded", goldenAt)
+		assert.Equal(t, "timeout", ev.errorClass)
+		assert.Equal(t, "deadline exceeded", ev.errorMessage)
 	})
 
 	t.Run("cancelled carries the reason", func(t *testing.T) {
-		ev := NewCancelled(task, "user asked", now)
-		assert.Equal(t, "user asked", ev.Reason)
+		ev := NewCancelled(task, "user asked", goldenAt)
+		assert.Equal(t, "user asked", ev.reason)
 	})
+}
+
+// TestPayloadGoldens pins the exact payload bytes of all six kinds.
+//
+// Two things are being proven, and both need BYTE equality rather than
+// assert.JSONEq. First, the keys are snake_case, matching the envelope that
+// wraps them. Second - the reason the collapse is safe - each payload carries
+// ONLY the fields its kind uses: a submitted event has no "reason", a cancelled
+// event has no "result". That is the property the six separate structs used to
+// get from the compiler, and this is where it now lives.
+//
+// These goldens are also what makes the Go 1.27 encoding/json/v2 switch
+// provable rather than assumed.
+func TestPayloadGoldens(t *testing.T) {
+	task := goldenTask(t)
+	running := task
+	require.NoError(t, running.Start(uuid.Must(uuid.NewV7()), "w-1", goldenAt.Add(time.Minute), goldenAt))
+
+	const head = `{"task_id":"018f1e60-0000-7000-8000-000000000001",` +
+		`"handler":"echo","priority":3,"at":"2026-09-18T12:00:00Z"`
+
+	for _, tc := range []struct {
+		name string
+		ev   Event
+		want string
+	}{
+		{"submitted", NewSubmitted(task, goldenAt), head + `}`},
+		{"started", NewStarted(task, goldenAt), head + `}`},
+		{
+			"succeeded", NewSucceeded(task, json.RawMessage(`{"ok":true}`), goldenAt),
+			head + `,"result":{"ok":true}}`,
+		},
+		{
+			"failed", NewFailed(task, "timeout", "dep took too long", goldenAt),
+			head + `,"error_class":"timeout","error_message":"dep took too long"}`,
+		},
+		{
+			"retry_scheduled", NewRetryScheduled(running, goldenAt.Add(30*time.Second), goldenAt),
+			head + `,"attempt":1,"next_at":"2026-09-18T12:00:30Z"}`,
+		},
+		{
+			"cancelled", NewCancelled(task, "user asked", goldenAt),
+			head + `,"reason":"user asked"}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := json.Marshal(tc.ev)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, string(got))
+		})
+	}
 }

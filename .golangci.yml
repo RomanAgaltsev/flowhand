@@ -18,6 +18,8 @@ linters:
     - unconvert
     - unparam
     - depguard
+    - exhaustive
+    - modernize
 
   settings:
     errcheck:
@@ -75,6 +77,11 @@ linters:
           deny:
             - pkg: "github.com/jackc/pgx/v5"
               desc: "pgx may only be imported by storage and repository layers"
+    exhaustive:
+      # A switch with a default IS exhaustive: task.go's IsTerminal lists the
+      # terminal set and defaults everything else to false, deliberately.
+      # Switches with NO default - EventName, MarshalJSON - are still checked.
+      default-signifies-exhaustive: true
 
   exclusions:
     rules:

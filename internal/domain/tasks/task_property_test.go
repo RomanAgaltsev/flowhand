@@ -54,7 +54,7 @@ func (m model) apply(method string) model {
 func methodSeq() gopter.Gen {
 	return gen.SliceOf(gen.OneConstOf(
 		mStart, mComplete, mFail, mScheduleRetry, mCancel,
-	), reflect.TypeOf(""))
+	), reflect.TypeFor[string]())
 }
 
 func propParameters() *gopter.Properties {

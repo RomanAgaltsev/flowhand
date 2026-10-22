@@ -202,7 +202,7 @@ func (m *lruModel) moveToFront(key int) {
 func TestLRUMatchesReferenceModel(t *testing.T) {
 	properties := gopter.NewProperties(gopter.DefaultTestParameters())
 
-	opGen := gen.Struct(reflect.TypeOf(lruOp{}), map[string]gopter.Gen{
+	opGen := gen.Struct(reflect.TypeFor[lruOp](), map[string]gopter.Gen{
 		"get": gen.Bool(),
 		"key": gen.IntRange(0, 15),
 		"val": gen.IntRange(0, 1000),

@@ -414,7 +414,7 @@ func TestPropertiesShardIDBucketDistribution(t *testing.T) {
 	//nolint:gosec // G404: fixed seed on purpose — reproducible failures,
 	// no security relevance in a distribution test.
 	rng := rand.New(rand.NewSource(1))
-	for i := 0; i < propCases; i++ {
+	for range propCases {
 		//nolint:gosec // G115: Intn(65536) < 65536 by construction.
 		s := ShardID(rng.Intn(65536))
 		b := s.Bucket(buckets)

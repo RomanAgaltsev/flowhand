@@ -173,6 +173,8 @@ func taskIn(status Status) Task {
 			workerID: "worker-0", startedAt: now, finishedAt: &finished,
 			errorClass: "timeout", errorMessage: "deadline exceeded",
 		}}
+	default:
+		// Other statuses carry no attempts
 	}
 
 	return FromPersistence(
@@ -430,16 +432,4 @@ func drain(t *Task) []domain.Event {
 		events = append(events, ev)
 	}
 	return events
-}
-
-// pendingTask is a freshly-submitted task with its Submitted event already
-// drained, so a test starts from an empty buffer.
-func pendingTask(t *testing.T) Task {
-	t.Helper()
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	task, err := Submit(uuid.Must(uuid.NewV7()), Handler{name: "echo"}, 7,
-		json.RawMessage(`{}`), 5, now)
-	require.NoError(t, err)
-	drain(&task)
-	return task
 }

@@ -181,9 +181,10 @@ func (t Task) AttemptCount() uint8 {
 // IsTerminal reports whether the task has reached a status it can never leave.
 //
 // The terminal set is listed explicitly and everything else defaults to false.
-// Go gives no exhaustiveness check on a string enum and the
-// `exhaustive` linter is not enabled, so adding a *terminal* status means
-// editing this switch, and schema.md's archive trigger has to agree with it.
+// The default arm is what makes this switch exhaustive: the `exhaustive`
+// linter runs with default-signifies-exhaustive, so it will not flag a new
+// status here. Adding a *terminal* status means editing this switch by hand,
+// and schema.md's archive trigger has to agree with it.
 func (t Task) IsTerminal() bool {
 	switch t.status {
 	case StatusSucceeded, StatusFailed, StatusCanceled, StatusDeadLettered:
