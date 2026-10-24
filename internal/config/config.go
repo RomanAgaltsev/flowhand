@@ -21,6 +21,7 @@ type Config struct {
 	Version string `koanf:"version"`
 	HTTP    HTTP   `koanf:"http"`
 	DB      DB     `koanf:"db"`
+	Redis   Redis  `koanf:"redis"`
 	Obs     Obs    `koanf:"obs"`
 }
 
@@ -36,6 +37,11 @@ type DB struct {
 	MaxConns        int32         `koanf:"max_conns"`
 	MinConns        int32         `koanf:"min_conns"`
 	MaxConnLifetime time.Duration `koanf:"max_conn_lifetime"`
+}
+
+// Redis holds the idempotency-cache connection settings.
+type Redis struct {
+	Addr string `koanf:"addr"`
 }
 
 // Obs holds the logging, tracing and metrics settings.
@@ -61,6 +67,7 @@ func Load(path string, flags *pflag.FlagSet) (*Config, error) {
 		"db.max_conns":          10,
 		"db.min_conns":          2,
 		"db.max_conn_lifetime":  "1h", // never 0: pgxpool reads that as "expire immediately"
+		"redis.addr":            "localhost:6379",
 		"obs.log_level":         "info",
 		"obs.log_format":        "json",
 		"obs.otlp_endpoint":     "localhost:4317",

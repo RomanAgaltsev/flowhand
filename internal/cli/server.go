@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/spf13/cobra"
 
 	"github.com/RomanAgaltsev/flowhand/internal/api"
@@ -57,8 +58,16 @@ var serverCmd = &cobra.Command{
 		tasksRepo := repotasks.New(txm)
 		outboxRepo := outbox.New(txm)
 
+		rdb := redis.NewClient(&redis.Options{Addr: cfg.Redis.Addr})
+		defer func() {
+			if err := rdb.Close(); err != nil {
+				slog.Error("redis close failed", "err", err)
+			}
+		}()
+		idempStore := task.NewRedisIdempotencyStore(rdb, slog.Default())
+
 		h := api.NewHandler(
-			task.NewCommander(tasksRepo, outboxRepo, txm, acceptAnyHandler{}),
+			task.NewCommander(tasksRepo, outboxRepo, txm, idempStore, acceptAnyHandler{}),
 			task.NewQuerier(tasksRepo),
 			slog.Default(),
 		)

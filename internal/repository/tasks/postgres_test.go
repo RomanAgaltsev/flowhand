@@ -5,5 +5,7 @@ import (
 	"github.com/RomanAgaltsev/flowhand/internal/service/task"
 )
 
-var _ task.TasksRepo = (*repotasks.Repo)(nil)
-var _ task.AttemptsRepo = (*repotasks.Repo)(nil) // same concrete type, second port
+var (
+	_ task.TasksRepo    = (*repotasks.Repo)(nil)
+	_ task.AttemptsRepo = (*repotasks.Repo)(nil) // same concrete type, second port
+)

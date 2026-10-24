@@ -127,8 +127,10 @@ func (r *Repo) PersistTransition(ctx context.Context, t domaintasks.Task, fenceE
 	// The transition touched only the LAST attempt (Start appends one,
 	// finishOpenAttempt closes one). Write exactly that row.
 	if attempts := t.Attempts(); len(attempts) > 0 {
-		n := int32(len(attempts))
-		last := attempts[n-1]
+		last := attempts[len(attempts)-1]
+		// AttemptCount rather than len: the domain's uint8 widens to the column's
+		// int32 safely, where int -> int32 is a G115 narrowing.
+		n := int32(t.AttemptCount())
 		if err := q.UpsertAttempt(ctx, queries.UpsertAttemptParams{
 			ID:            last.ID(),
 			TaskID:        t.ID(),
@@ -151,10 +153,14 @@ func (r *Repo) PersistTransition(ctx context.Context, t domaintasks.Task, fenceE
 // fenced, ceiling-bounded SQL lands with CE6.
 var errNotImplementedCE6 = errors.New("not implemented: lands with CE6")
 
+// ExtendLease satisfies task.TasksRepo until CE6 lands the fenced,
+// ceiling-bounded UPDATE. It always returns errNotImplementedCE6.
 func (r *Repo) ExtendLease(ctx context.Context, id uuid.UUID, until time.Time, fenceEpoch int64, ceiling time.Duration) (int64, error) {
 	return 0, errNotImplementedCE6
 }
 
+// Heartbeat satisfies task.AttemptsRepo until CE6 lands the task_attempts
+// write. It always returns errNotImplementedCE6.
 func (r *Repo) Heartbeat(ctx context.Context, taskID uuid.UUID, progress *float32, now time.Time) error {
 	return errNotImplementedCE6
 }

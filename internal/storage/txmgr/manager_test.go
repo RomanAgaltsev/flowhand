@@ -90,10 +90,10 @@ func insertTask(ctx context.Context, m *txmgr.Manager, id uuid.UUID) error {
 
 // taskCount reads row count on the pool, outside any transaction, so it only
 // sees committed work.
-func taskCount(t *testing.T, pool *pgxpool.Pool) int64 {
+func taskCount(ctx context.Context, t *testing.T, pool *pgxpool.Pool) int64 {
 	t.Helper()
 	var n int64
-	require.NoError(t, pool.QueryRow(context.Background(), "SELECT count(*) FROM tasks").Scan(&n))
+	require.NoError(t, pool.QueryRow(ctx, "SELECT count(*) FROM tasks").Scan(&n))
 	return n
 }
 
@@ -118,7 +118,7 @@ func TestWithinTx_HappyPath(t *testing.T) {
 		return insertTask(ctx, m, uuid.Must(uuid.NewV7()))
 	}))
 
-	require.EqualValues(t, 2, taskCount(t, pool), "both writes must be visible after commit")
+	require.EqualValues(t, 2, taskCount(ctx, t, pool), "both writes must be visible after commit")
 }
 
 // TestWithinTx_ErrorRollsBack proves an error return undoes prior writes in
@@ -139,7 +139,7 @@ func TestWithinTx_ErrorRollsBack(t *testing.T) {
 	})
 
 	require.ErrorIs(t, err, wantErr)
-	require.Zero(t, taskCount(t, pool), "the first insert must not survive the rollback")
+	require.Zero(t, taskCount(ctx, t, pool), "the first insert must not survive the rollback")
 }
 
 // TestWithinTx_PanicRollsBack proves a panic does not leave an open
@@ -158,14 +158,14 @@ func TestWithinTx_PanicRollsBack(t *testing.T) {
 
 	defer func() {
 		require.NotNil(t, recover(), "the panic must escape WithinTx")
-		require.Zero(t, taskCount(t, pool), "rollback on panic must undo the insert")
+		require.Zero(t, taskCount(ctx, t, pool), "rollback on panic must undo the insert")
 		// The next borrower: without the rollback, this write lands inside the
 		// abandoned transaction of whatever connection the pool hands back.
 		require.NoError(t, insertTask(ctx, m, uuid.Must(uuid.NewV7())))
-		require.EqualValues(t, 1, taskCount(t, pool), "the pool must be usable after a panic rollback")
+		require.EqualValues(t, 1, taskCount(ctx, t, pool), "the pool must be usable after a panic rollback")
 	}()
 
-	_ = m.WithinTx(ctx, func(ctx context.Context) error {
+	_ = m.WithinTx(ctx, func(ctx context.Context) error { //nolint:errcheck // unreachable: fn panics, and the deferred block asserts the outcome
 		if err := insertTask(ctx, m, uuid.Must(uuid.NewV7())); err != nil {
 			return err
 		}
@@ -201,7 +201,7 @@ func TestWithinTx_NestedReusesTransaction(t *testing.T) {
 
 	require.Equal(t, outerTxID, innerTxID,
 		"a nested WithinTx must reuse the outer transaction; a second BEGIN would wait on the outer one's locks")
-	require.EqualValues(t, 2, taskCount(t, pool), "both writes must land with the outer commit")
+	require.EqualValues(t, 2, taskCount(ctx, t, pool), "both writes must land with the outer commit")
 }
 
 // TestResolve_OutsideTxReturnsPool proves the fallback a repository meets on
@@ -216,5 +216,5 @@ func TestResolve_OutsideTxReturnsPool(t *testing.T) {
 	require.Same(t, pool, m.Resolve(ctx))
 
 	require.NoError(t, insertTask(ctx, m, uuid.Must(uuid.NewV7())))
-	require.EqualValues(t, 1, taskCount(t, pool))
+	require.EqualValues(t, 1, taskCount(ctx, t, pool))
 }
