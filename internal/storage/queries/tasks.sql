@@ -76,3 +76,9 @@ SELECT * FROM task_attempts WHERE task_id = $1 ORDER BY attempt;
 -- domain.EnvelopeVersion on the Go side (the column is the one source).
 INSERT INTO outbox_events (event_id, aggregate_id, type, envelope_ver, trace_id, payload)
 VALUES ($1, $2, $3, $4, $5, $6);
+
+-- name: GetArchivedTaskByID :one
+-- The read fallback for a task that has reached a terminal status: the archive
+-- trigger moves the row here in the same statement. Every partition's (id, finished_at)
+-- primary key leads with id.
+SELECT * FROM tasks_archive WHERE id = $1;

@@ -135,6 +135,44 @@ func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, e
 	return i, err
 }
 
+const getArchivedTaskByID = `-- name: GetArchivedTaskByID :one
+SELECT id, idempotency_key, payload, status, created_at, handler, tenant_id, priority, earliest_at, attempt, max_attempts, shard_id, cancel_requested, updated_at, started_at, worker_id, lease_until, lease_epoch, trace_id, finished_at, result, result_url, result_size_bytes FROM tasks_archive WHERE id = $1
+`
+
+// The read fallback for a task that has reached a terminal status: the archive
+// trigger moves the row here in the same statement. Every partition's (id, finished_at)
+// primary key leads with id.
+func (q *Queries) GetArchivedTaskByID(ctx context.Context, id uuid.UUID) (TasksArchive, error) {
+	row := q.db.QueryRow(ctx, getArchivedTaskByID, id)
+	var i TasksArchive
+	err := row.Scan(
+		&i.ID,
+		&i.IdempotencyKey,
+		&i.Payload,
+		&i.Status,
+		&i.CreatedAt,
+		&i.Handler,
+		&i.TenantID,
+		&i.Priority,
+		&i.EarliestAt,
+		&i.Attempt,
+		&i.MaxAttempts,
+		&i.ShardID,
+		&i.CancelRequested,
+		&i.UpdatedAt,
+		&i.StartedAt,
+		&i.WorkerID,
+		&i.LeaseUntil,
+		&i.LeaseEpoch,
+		&i.TraceID,
+		&i.FinishedAt,
+		&i.Result,
+		&i.ResultUrl,
+		&i.ResultSizeBytes,
+	)
+	return i, err
+}
+
 const getTaskByID = `-- name: GetTaskByID :one
 SELECT id, idempotency_key, payload, status, created_at, handler, tenant_id, priority, earliest_at, attempt, max_attempts, shard_id, cancel_requested, updated_at, started_at, worker_id, lease_until, lease_epoch, trace_id FROM tasks WHERE id = $1
 `

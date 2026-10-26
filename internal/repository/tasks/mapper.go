@@ -10,6 +10,33 @@ import (
 	"github.com/RomanAgaltsev/flowhand/internal/storage/queries"
 )
 
+// taskFromArchive narrows an archive row to the hot-table shape, so the one
+// toDomain serves both tables. The archive-only columns - finished_at and the
+// result trio - are not part of the aggregate.
+func taskFromArchive(a queries.TasksArchive) queries.Task {
+	return queries.Task{
+		ID:              a.ID,
+		IdempotencyKey:  a.IdempotencyKey,
+		Payload:         a.Payload,
+		Status:          a.Status,
+		CreatedAt:       a.CreatedAt,
+		Handler:         a.Handler,
+		TenantID:        a.TenantID,
+		Priority:        a.Priority,
+		EarliestAt:      a.EarliestAt,
+		Attempt:         a.Attempt,
+		MaxAttempts:     a.MaxAttempts,
+		ShardID:         a.ShardID,
+		CancelRequested: a.CancelRequested,
+		UpdatedAt:       a.UpdatedAt,
+		StartedAt:       a.StartedAt,
+		WorkerID:        a.WorkerID,
+		LeaseUntil:      a.LeaseUntil,
+		LeaseEpoch:      a.LeaseEpoch,
+		TraceID:         a.TraceID,
+	}
+}
+
 // toDomain converts a sqlc row plus that task's attempt rows back into the
 // aggregate. This is a fallible conversion: the database can hold a value the
 // domain rejects (a row written before the CHECK existed, or by a migration).

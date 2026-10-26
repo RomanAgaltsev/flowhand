@@ -73,6 +73,13 @@ func (r *Repo) Insert(ctx context.Context, t domaintasks.Task, idempotencyKey *s
 func (r *Repo) Get(ctx context.Context, id uuid.UUID) (domaintasks.Task, error) {
 	q := queries.New(r.resolver.Resolve(ctx))
 	row, err := q.GetTaskByID(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		archived, aerr := q.GetArchivedTaskByID(ctx, id)
+		if aerr != nil {
+			return domaintasks.Task{}, fmt.Errorf("get task %s: %w", id, translate(aerr))
+		}
+		row, err = taskFromArchive(archived), nil
+	}
 	if err != nil {
 		return domaintasks.Task{}, fmt.Errorf("get task %s: %w", id, translate(err))
 	}

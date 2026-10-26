@@ -271,3 +271,36 @@ func TestInsertAndAppendAreAtomic(t *testing.T) {
 		assert.Zero(t, n, "outbox rows must roll back with the outer transaction")
 	})
 }
+
+// TestRepo_GetFallsBackToArchive pins read rule: a terminal task
+// leaves `tasks` the moment it finishes, and Get must still find it. The direct
+// UPDATE stands in for the scheduler - the trigger does not care who wrote it.
+func TestRepo_GetFallsBackToArchive(t *testing.T) {
+	pool := startPostgresWithMigrations(t)
+	repo := repotasks.New(txmgr.New(pool))
+	ctx := context.Background()
+
+	tt := submitted(t, json.RawMessage(`{"msg":"done"}`))
+	require.NoError(t, repo.Insert(ctx, tt, nil))
+	_, err := pool.Exec(ctx, `UPDATE tasks SET status = 'succeeded' WHERE id = $1`, tt.ID())
+	require.NoError(t, err)
+
+	// The precondition, asserted rather than assumed: the trigger really moved it.
+	var hot, archived int
+	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM tasks WHERE id = $1`, tt.ID()).Scan(&hot))
+	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM tasks_archive WHERE id = $1`, tt.ID()).Scan(&archived))
+	require.Equal(t, 0, hot, "the archive trigger must have removed the hot row")
+	require.Equal(t, 1, archived, "the archive trigger must have written the archive row")
+
+	got, err := repo.Get(ctx, tt.ID())
+	require.NoError(t, err, "a finished task is archived, not gone")
+	assert.Equal(t, tt.ID(), got.ID())
+	assert.Equal(t, domaintasks.StatusSucceeded, got.Status())
+	assert.Equal(t, domaintasks.HandlerFromPersistence("echo"), got.Handler())
+	assert.JSONEq(t, `{"msg":"done"}`, string(got.Payload()))
+
+	// GetForUpdate stays hot-only: an archived task has no transition left to
+	// write, so a write path that found one would be a bug, not a feature.
+	_, err = repo.GetForUpdate(ctx, tt.ID())
+	require.ErrorIs(t, err, domaintasks.ErrNotFound)
+}

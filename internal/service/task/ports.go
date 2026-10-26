@@ -17,12 +17,16 @@ type TasksRepo interface {
 	// property of the submission, not of the task.
 	// A nil key means "no key" - the partial unique index ignores NULLs.
 	Insert(ctx context.Context, t tasks.Task, idempotencyKey *string) error
+	// Get finds a task whereever it livesL the hot table or tasks_archive once
+	// it has reached a terminal status. Only then is it ErrNotFound.
 	Get(ctx context.Context, id uuid.UUID) (tasks.Task, error)
 	GetByIdempotencyKey(ctx context.Context, key string) (tasks.Task, error)
 
 	// GetForUpdate row-locks the task for a read-modify-write. Callers MUST already be
 	// inside WithinTx. Outside one it degrades to a plain read and releases the lock
 	// immediately - no error, just a silently unlocked read-modifiy-write.
+	// Hot table only, unlike Get: an archived task is terminal and has no
+	// transition left to write.
 	GetForUpdate(ctx context.Context, id uuid.UUID) (tasks.Task, error)
 
 	// PersistTransition writes the attempt row and the fenced status update. Returns

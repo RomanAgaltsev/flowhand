@@ -18,6 +18,10 @@ type Querier interface {
 	AppendOutboxBatch(ctx context.Context, arg []AppendOutboxBatchParams) *AppendOutboxBatchBatchResults
 	CreateAttempt(ctx context.Context, arg CreateAttemptParams) (TaskAttempt, error)
 	CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error)
+	// The read fallback for a task that has reached a terminal status: the archive
+	// trigger moves the row here in the same statement. Every partition's (id, finished_at)
+	// primary key leads with id.
+	GetArchivedTaskByID(ctx context.Context, id uuid.UUID) (TasksArchive, error)
 	GetTaskByID(ctx context.Context, id uuid.UUID) (Task, error)
 	GetTaskByIdempotencyKey(ctx context.Context, idempotencyKey *string) (Task, error)
 	// Row-locks for a read-modify-write. Only meaningful inside a transaction:
