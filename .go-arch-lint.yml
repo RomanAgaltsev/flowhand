@@ -75,9 +75,8 @@ components:
   config: { in: config }
   obs: { in: obs }
 
-  # Shared generic containers. Nothing imports this yet; declaring it anyway
-  # keeps `go-arch-lint check` silent, because a file in no component is
-  # reported as a notice rather than ignored.
+  # Shared generic containers. service-task imports it for the read-side task
+    # cache; it imports nothing internal itself.
   generic-cache: { in: generic/cache }
 
   # Test-only leaf: the shared goroutine-leak check (plans/phase-1/01-p0,
@@ -110,7 +109,7 @@ deps:
     mayDependOn: [oas, service-task, domain-tasks]
 
   service-task:
-    mayDependOn: [domain, domain-tasks, repository, client]
+    mayDependOn: [domain, domain-tasks, repository, client, generic-cache]
   service-workflow:
     mayDependOn: [domain, domain-workflows, repository, client]
   service-schedule:

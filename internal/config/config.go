@@ -22,6 +22,7 @@ type Config struct {
 	HTTP    HTTP   `koanf:"http"`
 	DB      DB     `koanf:"db"`
 	Redis   Redis  `koanf:"redis"`
+	Cache   Cache  `koanf:"cache"`
 	Obs     Obs    `koanf:"obs"`
 }
 
@@ -42,6 +43,13 @@ type DB struct {
 // Redis holds the idempotency-cache connection settings.
 type Redis struct {
 	Addr string `koanf:"addr"`
+}
+
+// Cache holds the read-side task-view cache settings. TTL bounds MEMORY,
+// not staleness: only terminal view are cached and those cannot go stale.
+type Cache struct {
+	Capacity int           `koanf:"capacity"`
+	TTL      time.Duration `koanf:"ttl"`
 }
 
 // Obs holds the logging, tracing and metrics settings.
@@ -68,6 +76,8 @@ func Load(path string, flags *pflag.FlagSet) (*Config, error) {
 		"db.min_conns":          2,
 		"db.max_conn_lifetime":  "1h", // never 0: pgxpool reads that as "expire immediately"
 		"redis.addr":            "localhost:6379",
+		"cache.capacity":        10000,
+		"cache.ttl":             "5m",
 		"obs.log_level":         "info",
 		"obs.log_format":        "json",
 		"obs.otlp_endpoint":     "localhost:4317",

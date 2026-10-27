@@ -66,9 +66,14 @@ var serverCmd = &cobra.Command{
 		}()
 		idempStore := task.NewRedisIdempotencyStore(rdb, slog.Default())
 
+		taskCache, err := task.NewLRUCache(cfg.Cache.Capacity)
+		if err != nil {
+			return fmt.Errorf("task cache: %w", err)
+		}
+
 		h := api.NewHandler(
 			task.NewCommander(tasksRepo, outboxRepo, txm, idempStore, acceptAnyHandler{}),
-			task.NewQuerier(tasksRepo),
+			task.NewQuerier(tasksRepo, taskCache, cfg.Cache.TTL),
 			slog.Default(),
 		)
 
