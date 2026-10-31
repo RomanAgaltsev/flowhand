@@ -31,6 +31,9 @@ type fakeTasksRepo struct {
 
 	stored    domaintasks.Task
 	storedErr error
+
+	ledger    domaintasks.IdempotencyRecord // what GetIdempotencyRecord returns
+	ledgerErr error
 }
 
 func (f *fakeTasksRepo) Insert(_ context.Context, t domaintasks.Task, key *string) error {
@@ -44,14 +47,16 @@ func (f *fakeTasksRepo) Get(_ context.Context, _ uuid.UUID) (domaintasks.Task, e
 	return f.stored, f.storedErr
 }
 
-func (f *fakeTasksRepo) GetByIdempotencyKey(_ context.Context, _ string) (domaintasks.Task, error) {
-	f.rec.add("get_by_key")
-	return f.stored, f.storedErr
+func (f *fakeTasksRepo) GetIdempotencyRecord(
+	_ context.Context, _ domaintasks.Handler, _ domaintasks.IdempotencyKey,
+) (domaintasks.IdempotencyRecord, error) {
+	f.rec.add("get_record")
+	return f.ledger, f.ledgerErr
 }
 
 // The T2 port growth in action: the fake must satisfy the whole interface even
-// though Submit only calls Insert/Get/GetByIdempotencyKey. They record too, so
-// a future test that exercises one fails on an assertion, not on compilation.
+// though Submit calls only some of it. They record too, so a future test that
+// exercises one fails on an assertion, not on compilation.
 func (f *fakeTasksRepo) GetForUpdate(_ context.Context, _ uuid.UUID) (domaintasks.Task, error) {
 	f.rec.add("get_for_update")
 	return f.stored, f.storedErr
@@ -96,32 +101,37 @@ func (f *fakeTx) WithinTx(ctx context.Context, fn func(context.Context) error) e
 type fakeIdempStore struct {
 	rec *recorder
 
-	hitID     uuid.UUID // returned when hit is true
+	hitRec    domaintasks.IdempotencyRecord // returned when hit is true
 	hit       bool
 	lookupErr error // a cache failure; must NOT fail the submit
 
-	recordErr  error
-	recordedID uuid.UUID
-	recordKey  string
+	recordErr     error
+	recorded      domaintasks.IdempotencyRecord
+	recordKey     string
+	recordHandler string
 }
 
-func (f *fakeIdempStore) Lookup(_ context.Context, _ domaintasks.IdempotencyKey) (uuid.UUID, bool, error) {
+func (f *fakeIdempStore) Lookup(
+	_ context.Context, _ domaintasks.Handler, _ domaintasks.IdempotencyKey,
+) (domaintasks.IdempotencyRecord, bool, error) {
 	f.rec.add("idemp:lookup")
 	if f.lookupErr != nil {
 		// The real store swallows this, and TestRedisStore_LookupFailsThrough
 		// pins that. The fake reports it anyway, so this side proves the
 		// Commander falls through even when a store breaks the contract.
-		return uuid.Nil, false, f.lookupErr
+		return domaintasks.IdempotencyRecord{}, false, f.lookupErr
 	}
 	if !f.hit {
-		return uuid.Nil, false, nil
+		return domaintasks.IdempotencyRecord{}, false, nil
 	}
-	return f.hitID, true, nil
+	return f.hitRec, true, nil
 }
 
-func (f *fakeIdempStore) Record(_ context.Context, key domaintasks.IdempotencyKey, taskID uuid.UUID) error {
+func (f *fakeIdempStore) Record(
+	_ context.Context, handler domaintasks.Handler, key domaintasks.IdempotencyKey, rec domaintasks.IdempotencyRecord,
+) error {
 	f.rec.add("idemp:record")
-	f.recordedID, f.recordKey = taskID, key.String()
+	f.recorded, f.recordKey, f.recordHandler = rec, key.String(), handler.Name()
 	return f.recordErr
 }
 
@@ -135,6 +145,24 @@ func newTestCommander(t *testing.T, repo *fakeTasksRepo, ob *fakeOutbox, tx *fak
 	return c
 }
 
+// fingerprint is NewPayloadFingerprint for a payload the test knows is valid.
+func fingerprint(t *testing.T, payload string) domaintasks.PayloadFingerprint {
+	t.Helper()
+	fp, err := domaintasks.NewPayloadFingerprint(json.RawMessage(payload))
+	require.NoError(t, err)
+	return fp
+}
+
+// storedTask is a task already in the store, as a replay would find it.
+func storedTask(status domaintasks.Status) domaintasks.Task {
+	at := time.Now().UTC()
+	return domaintasks.FromPersistence(
+		uuid.Must(uuid.NewV7()), status,
+		domaintasks.HandlerFromPersistence("echo"), 0,
+		json.RawMessage(`{}`), nil, 0, at, 1, at,
+	)
+}
+
 func TestSubmit_HappyPath(t *testing.T) {
 	rec := &recorder{}
 	repo := &fakeTasksRepo{rec: rec}
@@ -146,11 +174,12 @@ func TestSubmit_HappyPath(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	c := newTestCommander(t, repo, ob, tx, idemp, id, now)
 
-	got, err := c.Submit(context.Background(), SubmitCommand{
+	got, created, err := c.Submit(context.Background(), SubmitCommand{
 		Handler: "echo",
 		Payload: json.RawMessage(`{"a":1}`),
 	})
 	require.NoError(t, err)
+	assert.True(t, created)
 
 	// The ordering assertion is the point of the test: both writes happen
 	// inside the transaction, insert before append.
@@ -172,36 +201,41 @@ func TestSubmit_PassesIdempotencyKey(t *testing.T) {
 	c := newTestCommander(t, repo, &fakeOutbox{rec: rec}, &fakeTx{rec: rec},
 		&fakeIdempStore{rec: rec}, uuid.Must(uuid.NewV7()), time.Now().UTC())
 
-	_, err := c.Submit(context.Background(), SubmitCommand{Handler: "echo", Payload: json.RawMessage(`{}`), IdempotencyKey: "k-1"})
+	_, created, err := c.Submit(context.Background(), SubmitCommand{Handler: "echo", Payload: json.RawMessage(`{}`), IdempotencyKey: "k-1"})
 	require.NoError(t, err)
+	assert.True(t, created)
 
 	require.NotNil(t, repo.gotKey)
 	assert.Equal(t, "k-1", *repo.gotKey)
 }
 
 func TestSubmit_ConflictReplaysExistingTask(t *testing.T) {
+	// Cold cache, ledger collision, same payload: the ledger row names the task,
+	// Get fetches it (from the archive if it has finished), and the replay
+	// re-warms the cache so the next duplicate takes the fast path.
 	rec := &recorder{}
-	storedAt := time.Now().UTC()
-	existing := domaintasks.FromPersistence(
-		uuid.Must(uuid.NewV7()), domaintasks.StatusRunning,
-		domaintasks.HandlerFromPersistence("echo"), 0,
-		json.RawMessage(`{}`), nil, 0, storedAt, 1, storedAt,
-	)
+	existing := storedTask(domaintasks.StatusRunning)
 	repo := &fakeTasksRepo{
 		rec:       rec,
 		insertErr: fmt.Errorf("insert task: %w", domaintasks.ErrConflict),
 		stored:    existing,
+		ledger:    domaintasks.IdempotencyRecord{TaskID: existing.ID(), Fingerprint: fingerprint(t, `{}`)},
 	}
 	ob := &fakeOutbox{rec: rec}
-	c := newTestCommander(t, repo, ob, &fakeTx{rec: rec}, &fakeIdempStore{rec: rec}, uuid.Must(uuid.NewV7()), time.Now().UTC())
+	idemp := &fakeIdempStore{rec: rec}
+	c := newTestCommander(t, repo, ob, &fakeTx{rec: rec}, idemp, uuid.Must(uuid.NewV7()), time.Now().UTC())
 
-	got, err := c.Submit(context.Background(), SubmitCommand{Handler: "echo", Payload: json.RawMessage(`{}`), IdempotencyKey: "k-1"})
+	got, created, err := c.Submit(context.Background(), SubmitCommand{Handler: "echo", Payload: json.RawMessage(`{}`), IdempotencyKey: "k-1"})
 	require.NoError(t, err)
+	assert.False(t, created, "a replay did not create anything")
 
 	assert.Equal(t, existing.ID(), got.ID())
-	// Replay reads AFTER the aborted transaction, and emits no event.
-	assert.Equal(t, []string{"idemp:lookup", "tx:begin", "insert", "tx:rollback", "get_by_key"}, rec.calls)
+	// The replay reads AFTER the aborted transaction, and emits no event.
+	assert.Equal(t, []string{
+		"idemp:lookup", "tx:begin", "insert", "tx:rollback", "get_record", "get", "idemp:record",
+	}, rec.calls)
 	assert.Empty(t, ob.events)
+	assert.Equal(t, existing.ID(), idemp.recorded.TaskID)
 }
 
 func TestSubmit_OutboxErrorAborts(t *testing.T) {
@@ -210,7 +244,7 @@ func TestSubmit_OutboxErrorAborts(t *testing.T) {
 	c := newTestCommander(t, &fakeTasksRepo{rec: rec}, &fakeOutbox{rec: rec, err: wantErr},
 		&fakeTx{rec: rec}, &fakeIdempStore{rec: rec}, uuid.Must(uuid.NewV7()), time.Now().UTC())
 
-	_, err := c.Submit(context.Background(), SubmitCommand{Handler: "echo", Payload: json.RawMessage(`{}`)})
+	_, _, err := c.Submit(context.Background(), SubmitCommand{Handler: "echo", Payload: json.RawMessage(`{}`)})
 	require.ErrorIs(t, err, wantErr)
 	assert.Equal(t, []string{"tx:begin", "insert", "append", "tx:rollback"}, rec.calls)
 }
@@ -220,7 +254,7 @@ func TestSubmit_IDErrorTouchesNothing(t *testing.T) {
 	c := NewCommander(&fakeTasksRepo{rec: rec}, &fakeOutbox{rec: rec}, &fakeTx{rec: rec}, &fakeIdempStore{rec: rec}, fakeCatalog{})
 	c.newID = func() (uuid.UUID, error) { return uuid.Nil, errors.New("entropy exhausted") }
 
-	_, err := c.Submit(context.Background(), SubmitCommand{Handler: "echo", Payload: json.RawMessage(`{}`)})
+	_, _, err := c.Submit(context.Background(), SubmitCommand{Handler: "echo", Payload: json.RawMessage(`{}`)})
 	require.ErrorContains(t, err, "entropy exhausted") // not "nil payload": the test must fail for its own reason
 	assert.Empty(t, rec.calls, "must fail before opening a transaction")
 }
@@ -231,9 +265,9 @@ func TestSubmit_ConflictWithoutKeyIsNotReplayed(t *testing.T) {
 	c := newTestCommander(t, repo, &fakeOutbox{rec: rec}, &fakeTx{rec: rec},
 		&fakeIdempStore{rec: rec}, uuid.Must(uuid.NewV7()), time.Now().UTC())
 
-	_, err := c.Submit(context.Background(), SubmitCommand{Handler: "echo", Payload: json.RawMessage(`{}`)})
+	_, _, err := c.Submit(context.Background(), SubmitCommand{Handler: "echo", Payload: json.RawMessage(`{}`)})
 	require.ErrorContains(t, err, "idempotency conflict without a key")
-	assert.NotContains(t, rec.calls, "get_by_key")
+	assert.NotContains(t, rec.calls, "get_record")
 }
 
 func TestSubmit_ReplayLookupFails(t *testing.T) {
@@ -241,12 +275,12 @@ func TestSubmit_ReplayLookupFails(t *testing.T) {
 	repo := &fakeTasksRepo{
 		rec:       rec,
 		insertErr: fmt.Errorf("insert: %w", domaintasks.ErrConflict),
-		storedErr: errors.New("connection refused"),
+		ledgerErr: errors.New("connection refused"),
 	}
 	c := newTestCommander(t, repo, &fakeOutbox{rec: rec}, &fakeTx{rec: rec},
 		&fakeIdempStore{rec: rec}, uuid.Must(uuid.NewV7()), time.Now().UTC())
 
-	_, err := c.Submit(context.Background(), SubmitCommand{Handler: "echo", Payload: json.RawMessage(`{}`), IdempotencyKey: "k-1"})
+	_, _, err := c.Submit(context.Background(), SubmitCommand{Handler: "echo", Payload: json.RawMessage(`{}`), IdempotencyKey: "k-1"})
 	require.ErrorContains(t, err, "replay idempotent task")
 }
 
@@ -266,7 +300,7 @@ func TestSubmit_KeylessNeverTouchesRedis(t *testing.T) {
 	c := newTestCommander(t, &fakeTasksRepo{rec: rec}, &fakeOutbox{rec: rec},
 		&fakeTx{rec: rec}, idemp, uuid.Must(uuid.NewV7()), time.Now().UTC())
 
-	_, err := c.Submit(context.Background(), SubmitCommand{
+	_, _, err := c.Submit(context.Background(), SubmitCommand{
 		Handler: "echo", Payload: json.RawMessage(`{}`),
 	})
 	require.NoError(t, err)
@@ -276,32 +310,97 @@ func TestSubmit_KeylessNeverTouchesRedis(t *testing.T) {
 }
 
 func TestSubmit_CacheHitShortCircuits(t *testing.T) {
-	// The whole point of phase 1: a hit opens NO transaction. The negative is
-	// the assertion - a Commander that looked up and then submitted anyway
-	// would return the right task and still be wrong.
+	// The whole point of the fast path: a hit opens NO transaction. The
+	// negative is the assertion - a Commander that looked up and then submitted
+	// anyway would return the right task and still be wrong.
 	rec := &recorder{}
-	storedAt := time.Now().UTC()
-	existing := domaintasks.FromPersistence(
-		uuid.Must(uuid.NewV7()), domaintasks.StatusRunning,
-		domaintasks.HandlerFromPersistence("echo"), 0,
-		json.RawMessage(`{}`), nil, 0, storedAt, 1, storedAt,
-	)
+	existing := storedTask(domaintasks.StatusRunning)
 	repo := &fakeTasksRepo{rec: rec, stored: existing}
-	idemp := &fakeIdempStore{rec: rec, hit: true, hitID: existing.ID()}
+	idemp := &fakeIdempStore{rec: rec, hit: true, hitRec: domaintasks.IdempotencyRecord{
+		TaskID: existing.ID(), Fingerprint: fingerprint(t, `{"a":1,"b":2}`),
+	}}
 
 	c := newTestCommander(t, repo, &fakeOutbox{rec: rec}, &fakeTx{rec: rec},
 		idemp, uuid.Must(uuid.NewV7()), time.Now().UTC())
 
-	got, err := c.Submit(context.Background(), SubmitCommand{
-		Handler: "echo", Payload: json.RawMessage(`{}`), IdempotencyKey: "k-1",
+	// The same payload with its keys reordered: the same request.
+	got, created, err := c.Submit(context.Background(), SubmitCommand{
+		Handler: "echo", Payload: json.RawMessage(`{"b":2,"a":1}`), IdempotencyKey: "k-1",
 	})
 	require.NoError(t, err)
+	assert.False(t, created)
 
 	assert.Equal(t, existing.ID(), got.ID())
 	assert.Equal(t, []string{"idemp:lookup", "get"}, rec.calls,
 		"a cache hit must open no transaction and insert nothing")
-	assert.NotContains(t, rec.calls, "tx:begin")
-	assert.NotContains(t, rec.calls, "insert")
+}
+
+func TestSubmit_FastPathConflict(t *testing.T) {
+	// The cache knows the key and the payload differs: 409 territory, decided
+	// before an id is minted. Nothing after the lookup may happen - not even
+	// the Get, because the answer does not need the task.
+	rec := &recorder{}
+	existingID := uuid.Must(uuid.NewV7())
+	idemp := &fakeIdempStore{rec: rec, hit: true, hitRec: domaintasks.IdempotencyRecord{
+		TaskID: existingID, Fingerprint: fingerprint(t, `{"a":1}`),
+	}}
+	ob := &fakeOutbox{rec: rec}
+	c := newTestCommander(t, &fakeTasksRepo{rec: rec}, ob, &fakeTx{rec: rec},
+		idemp, uuid.Must(uuid.NewV7()), time.Now().UTC())
+
+	_, created, err := c.Submit(context.Background(), SubmitCommand{
+		Handler: "echo", Payload: json.RawMessage(`{"a":2}`), IdempotencyKey: "k-1",
+	})
+	require.ErrorIs(t, err, ErrIdempotencyConflict)
+	ce, ok := errors.AsType[*ConflictError](err)
+	require.True(t, ok)
+	assert.Equal(t, existingID, ce.ExistingTaskID)
+	assert.False(t, created)
+
+	assert.Equal(t, []string{"idemp:lookup"}, rec.calls,
+		"a fast-path conflict must open no transaction, insert nothing, append nothing")
+	assert.Empty(t, ob.events)
+}
+
+func TestSubmit_LedgerConflict(t *testing.T) {
+	// Cold cache: the conflict is found where the duplicate is - at the ledger
+	// insert. One transaction opens and rolls back; that is the write protocol,
+	// not a leak. What must NOT happen is anything after the ledger read: no
+	// Get, no event, no cache warm for a submit that was refused.
+	rec := &recorder{}
+	existingID := uuid.Must(uuid.NewV7())
+	repo := &fakeTasksRepo{
+		rec:       rec,
+		insertErr: fmt.Errorf("insert task: %w", domaintasks.ErrConflict),
+		ledger:    domaintasks.IdempotencyRecord{TaskID: existingID, Fingerprint: fingerprint(t, `{"a":1}`)},
+	}
+	ob := &fakeOutbox{rec: rec}
+	c := newTestCommander(t, repo, ob, &fakeTx{rec: rec},
+		&fakeIdempStore{rec: rec}, uuid.Must(uuid.NewV7()), time.Now().UTC())
+
+	_, _, err := c.Submit(context.Background(), SubmitCommand{
+		Handler: "echo", Payload: json.RawMessage(`{"a":2}`), IdempotencyKey: "k-1",
+	})
+	ce, ok := errors.AsType[*ConflictError](err)
+	require.True(t, ok, "got %v", err)
+	assert.Equal(t, existingID, ce.ExistingTaskID)
+
+	assert.Equal(t, []string{"idemp:lookup", "tx:begin", "insert", "tx:rollback", "get_record"}, rec.calls)
+	assert.Empty(t, ob.events)
+}
+
+func TestSubmit_InvalidKeyIsRejected(t *testing.T) {
+	// D24's backstop. The wire rejects a non-ASCII key at decode; a caller that
+	// is not the HTTP API gets the domain's error here, before anything runs.
+	rec := &recorder{}
+	c := newTestCommander(t, &fakeTasksRepo{rec: rec}, &fakeOutbox{rec: rec}, &fakeTx{rec: rec},
+		&fakeIdempStore{rec: rec}, uuid.Must(uuid.NewV7()), time.Now().UTC())
+
+	_, _, err := c.Submit(context.Background(), SubmitCommand{
+		Handler: "echo", Payload: json.RawMessage(`{}`), IdempotencyKey: "ключ",
+	})
+	require.ErrorIs(t, err, domaintasks.ErrInvalidIdempotencyKey)
+	assert.Empty(t, rec.calls, "an invalid key must not reach the cache or the database")
 }
 
 func TestSubmit_CacheFailureFallsThrough(t *testing.T) {
@@ -315,10 +414,11 @@ func TestSubmit_CacheFailureFallsThrough(t *testing.T) {
 	c := newTestCommander(t, repo, &fakeOutbox{rec: rec}, &fakeTx{rec: rec},
 		idemp, uuid.Must(uuid.NewV7()), time.Now().UTC())
 
-	got, err := c.Submit(context.Background(), SubmitCommand{
+	got, created, err := c.Submit(context.Background(), SubmitCommand{
 		Handler: "echo", Payload: json.RawMessage(`{}`), IdempotencyKey: "k-1",
 	})
 	require.NoError(t, err, "a Redis outage must not fail a submit")
+	assert.True(t, created)
 	assert.Equal(t, domaintasks.StatusPending, got.Status())
 	assert.Equal(t, []string{"idemp:lookup", "tx:begin", "insert", "append", "tx:commit", "idemp:record"},
 		rec.calls)
@@ -335,15 +435,17 @@ func TestSubmit_WarmsCacheAfterCommit(t *testing.T) {
 	c := newTestCommander(t, &fakeTasksRepo{rec: rec}, &fakeOutbox{rec: rec},
 		&fakeTx{rec: rec}, idemp, id, time.Now().UTC())
 
-	_, err := c.Submit(context.Background(), SubmitCommand{
-		Handler: "echo", Payload: json.RawMessage(`{}`), IdempotencyKey: "k-1",
+	_, _, err := c.Submit(context.Background(), SubmitCommand{
+		Handler: "echo", Payload: json.RawMessage(`{"b":2,"a":1}`), IdempotencyKey: "k-1",
 	})
 	require.NoError(t, err)
 
 	require.Equal(t, []string{"tx:begin", "insert", "append", "tx:commit", "idemp:record"},
 		rec.calls[1:], "Record must come after tx:commit, never before or inside")
-	assert.Equal(t, id, idemp.recordedID)
+	assert.Equal(t, domaintasks.IdempotencyRecord{TaskID: id, Fingerprint: fingerprint(t, `{"a":1,"b":2}`)},
+		idemp.recorded, "the cache must carry the same canonical fingerprint the ledger does")
 	assert.Equal(t, "k-1", idemp.recordKey)
+	assert.Equal(t, "echo", idemp.recordHandler)
 }
 
 func TestSubmit_WarmFailureIsSoft(t *testing.T) {
@@ -356,9 +458,10 @@ func TestSubmit_WarmFailureIsSoft(t *testing.T) {
 	c := newTestCommander(t, &fakeTasksRepo{rec: rec}, &fakeOutbox{rec: rec},
 		&fakeTx{rec: rec}, idemp, uuid.Must(uuid.NewV7()), time.Now().UTC())
 
-	got, err := c.Submit(context.Background(), SubmitCommand{
+	got, created, err := c.Submit(context.Background(), SubmitCommand{
 		Handler: "echo", Payload: json.RawMessage(`{}`), IdempotencyKey: "k-1",
 	})
 	require.NoError(t, err, "a failed cache warm must not fail a committed submit")
+	assert.True(t, created)
 	assert.Equal(t, domaintasks.StatusPending, got.Status())
 }

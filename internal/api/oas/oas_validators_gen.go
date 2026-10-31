@@ -15,8 +15,24 @@ func (s *CreateTaskBadRequest) Validate() error {
 	return nil
 }
 
+func (s *CreateTaskCreated) Validate() error {
+	alias := (*Task)(s)
+	if err := alias.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (s *CreateTaskInternalServerError) Validate() error {
 	alias := (*Error)(s)
+	if err := alias.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *CreateTaskOK) Validate() error {
+	alias := (*Task)(s)
 	if err := alias.Validate(); err != nil {
 		return err
 	}
@@ -62,7 +78,7 @@ func (s *CreateTaskRequest) Validate() error {
 					MaxLengthSet:  true,
 					Email:         false,
 					Hostname:      false,
-					Regex:         nil,
+					Regex:         regexMap["^[\\x00-\\x7F]+$"],
 					MinNumeric:    0,
 					MinNumericSet: false,
 					MaxNumeric:    0,
@@ -119,6 +135,8 @@ func (s ErrorCode) Validate() error {
 		return nil
 	case "task_not_found":
 		return nil
+	case "idempotency_conflict":
+		return nil
 	case "internal_error":
 		return nil
 	default:
@@ -140,6 +158,46 @@ func (s *GetTaskNotFound) Validate() error {
 		return err
 	}
 	return nil
+}
+
+func (s *IdempotencyConflict) Validate() error {
+	if s == nil {
+		return validate.ErrNilPointer
+	}
+
+	var failures []validate.FieldError
+	if err := func() error {
+		if err := s.Code.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "code",
+			Error: err,
+		})
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+	return nil
+}
+
+func (s IdempotencyConflictCode) Validate() error {
+	switch s {
+	case "invalid_request_body":
+		return nil
+	case "invalid_parameter":
+		return nil
+	case "task_not_found":
+		return nil
+	case "idempotency_conflict":
+		return nil
+	case "internal_error":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
 }
 
 func (s *Task) Validate() error {

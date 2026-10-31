@@ -13,9 +13,6 @@ RETURNING *;
 -- name: GetTaskByID :one
 SELECT * FROM tasks WHERE id = $1;
 
--- name: GetTaskByIdempotencyKey :one
-SELECT * FROM tasks WHERE idempotency_key = $1;
-
 -- name: GetTaskForUpdate :one
 -- Row-locks for a read-modify-write. Only meaningful inside a transaction:
 -- on the bare pool the lock evaporates the moment the statement returns.
@@ -36,6 +33,12 @@ WHERE id = $1 AND lease_epoch = $5;
 -- name: InsertIdempotencyKey :exec
 INSERT INTO idempotency_keys (tenant_id, handler, idempotency_key, task_id, payload_hash)
 VALUES ($1, $2, $3, $4, $5);
+
+-- name: GetIdempotencyRecord :one
+-- The ledger replay: what a key resolves to once its insert has collided.
+-- Keyed by the full primary key, so the read is scoped exactly as the gate is.
+SELECT task_id, payload_hash FROM idempotency_keys
+WHERE tenant_id = $1 AND handler = $2 AND idempotency_key = $3;
 
 -- name: CreateAttempt :one
 INSERT INTO task_attempts (

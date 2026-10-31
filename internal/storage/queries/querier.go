@@ -22,8 +22,10 @@ type Querier interface {
 	// trigger moves the row here in the same statement. Every partition's (id, finished_at)
 	// primary key leads with id.
 	GetArchivedTaskByID(ctx context.Context, id uuid.UUID) (TasksArchive, error)
+	// The ledger replay: what a key resolves to once its insert has collided.
+	// Keyed by the full primary key, so the read is scoped exactly as the gate is.
+	GetIdempotencyRecord(ctx context.Context, arg GetIdempotencyRecordParams) (GetIdempotencyRecordRow, error)
 	GetTaskByID(ctx context.Context, id uuid.UUID) (Task, error)
-	GetTaskByIdempotencyKey(ctx context.Context, idempotencyKey *string) (Task, error)
 	// Row-locks for a read-modify-write. Only meaningful inside a transaction:
 	// on the bare pool the lock evaporates the moment the statement returns.
 	GetTaskForUpdate(ctx context.Context, id uuid.UUID) (Task, error)

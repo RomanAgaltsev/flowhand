@@ -14,17 +14,23 @@ import (
 // Implemented by internal/repository/tasks.
 type TasksRepo interface {
 	// Insert takes the idempotency key alongside the aggregate: the key is a
-	// property of the submission, not of the task.
-	// A nil key means "no key" - the partial unique index ignores NULLs.
+	// property of the submission, not of the task. A non-nil key also writes the
+	// ledger row - key, task id, payload fingerprint - in the same transaction;
+	// a key already in the ledger is ErrConflict. A nil key means "no key" and
+	// writes no ledger row.
 	Insert(ctx context.Context, t tasks.Task, idempotencyKey *string) error
-	// Get finds a task whereever it livesL the hot table or tasks_archive once
+	// Get finds a task wherever it lives: the hot table, or tasks_archive once
 	// it has reached a terminal status. Only then is it ErrNotFound.
 	Get(ctx context.Context, id uuid.UUID) (tasks.Task, error)
-	GetByIdempotencyKey(ctx context.Context, key string) (tasks.Task, error)
+
+	// GetIdempotencyRecord reads the ledger row for (handler, key): the task the
+	// first submit created and its payload fingerprint. ErrNotFound on a miss.
+	// The ledger outlives the task row, so this answers after archival too.
+	GetIdempotencyRecord(ctx context.Context, handler tasks.Handler, key tasks.IdempotencyKey) (tasks.IdempotencyRecord, error)
 
 	// GetForUpdate row-locks the task for a read-modify-write. Callers MUST already be
 	// inside WithinTx. Outside one it degrades to a plain read and releases the lock
-	// immediately - no error, just a silently unlocked read-modifiy-write.
+	// immediately - no error, just a silently unlocked read-modify-write.
 	// Hot table only, unlike Get: an archived task is terminal and has no
 	// transition left to write.
 	GetForUpdate(ctx context.Context, id uuid.UUID) (tasks.Task, error)

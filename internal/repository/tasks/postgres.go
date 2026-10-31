@@ -2,7 +2,6 @@ package tasks
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"time"
@@ -52,13 +51,16 @@ func (r *Repo) Insert(ctx context.Context, t domaintasks.Task, idempotencyKey *s
 	if idempotencyKey == nil {
 		return nil
 	}
-	sum := sha256.Sum256(t.Payload())
-	err := q.InsertIdempotencyKey(ctx, queries.InsertIdempotencyKeyParams{
+	fp, err := domaintasks.NewPayloadFingerprint(t.Payload())
+	if err != nil {
+		return fmt.Errorf("insert task %s: %w", t.ID(), err)
+	}
+	err = q.InsertIdempotencyKey(ctx, queries.InsertIdempotencyKeyParams{
 		TenantID:       defaultTenantID,
 		Handler:        t.Handler().Name(),
 		IdempotencyKey: *idempotencyKey,
 		TaskID:         t.ID(),
-		PayloadHash:    sum[:],
+		PayloadHash:    fp[:],
 	})
 	if isUniqueViolation(err) {
 		return fmt.Errorf("insert task %s: %w", t.ID(), domaintasks.ErrConflict)
@@ -86,14 +88,30 @@ func (r *Repo) Get(ctx context.Context, id uuid.UUID) (domaintasks.Task, error) 
 	return r.hydrate(ctx, q, row)
 }
 
-// GetByIdempotencyKey returns a task from repo by idempotency key.
-func (r *Repo) GetByIdempotencyKey(ctx context.Context, key string) (domaintasks.Task, error) {
+// GetIdempotencyRecord returns what a key resolves to in the ledger: the task
+// the first submit created and the fingerprint of its payload.
+//
+// The contract, all of it pinned by TestRepo_getIdempotencyRecord:
+//   - scoped exactly as the primary key is: defaultTenantID, handler, key;
+//   - a miss is domaintasks.ErrNotFound, through translate;
+//   - a payload_hash that is not 16 bytes is an error, never a truncated or
+//     zero-padded fingerprint.
+func (r *Repo) GetIdempotencyRecord(
+	ctx context.Context, handler domaintasks.Handler, key domaintasks.IdempotencyKey,
+) (domaintasks.IdempotencyRecord, error) {
 	q := queries.New(r.resolver.Resolve(ctx))
-	row, err := q.GetTaskByIdempotencyKey(ctx, &key)
+	row, err := q.GetIdempotencyRecord(ctx, queries.GetIdempotencyRecordParams{
+		TenantID:       defaultTenantID,
+		Handler:        handler.Name(),
+		IdempotencyKey: key.String(),
+	})
 	if err != nil {
-		return domaintasks.Task{}, fmt.Errorf("get task by idempotency key: %w", translate(err))
+		return domaintasks.IdempotencyRecord{}, fmt.Errorf("get idempotency record for the key %s: %w", key.String(), translate(err))
 	}
-	return r.hydrate(ctx, q, row)
+	return domaintasks.IdempotencyRecord{
+		TaskID:      row.TaskID,
+		Fingerprint: domaintasks.PayloadFingerprint(row.PayloadHash),
+	}, nil
 }
 
 // GetForUpdate returns the task with its attempt history, row-locked until the

@@ -16,6 +16,13 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/CreateTaskRequest" }
       responses:
+        "200":
+          description: >
+            The task an earlier submit with the same idempotency key and the same
+            payload created, in its current state. Nothing new was created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
         "201":
           description: Task accepted
           content:
@@ -26,6 +33,13 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: >
+            The idempotency key was already used with a different payload. Nothing
+            was created; existing_task_id names the task the key belongs to.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IdempotencyConflict" }
         "500":
           description: Server error
           content:
@@ -71,6 +85,8 @@ components:
           additionalProperties: true
         idempotency_key:
           type: string
+          description: ASCII only, so the key is the same bytes in every client.
+          pattern: '^[\x00-\x7F]+$'
           minLength: 1
           maxLength: 128
     Task:
@@ -94,10 +110,17 @@ components:
           description: >
             Stable machine-readable error symbol. Clients should branch on this,
             never on `message`, which is human-facing and may change.
-          enum: [invalid_request_body, invalid_parameter, task_not_found, internal_error]
+          enum: [invalid_request_body, invalid_parameter, task_not_found, idempotency_conflict, internal_error]
         message:
           type: string
           description: >
             Human-facing detail. For 4xx it names what about the request was
             wrong; for 5xx it stays deliberately opaque so server internals
             never reach the wire.
+    IdempotencyConflict:
+      allOf:
+        - $ref: "#/components/schemas/Error"
+        - type: object
+          required: [existing_task_id]
+          properties:
+            existing_task_id: { type: string, format: uuid }

@@ -21,7 +21,7 @@ var tracer = otel.Tracer("github.com/RomanAgaltsev/flowhand/internal/api")
 // service package, so the handler owns the shape it depends on and tests can
 // fake it. Satisfies by *task.Commander.
 type Commander interface {
-	Submit(ctx context.Context, cmd task.SubmitCommand) (domaintasks.Task, error)
+	Submit(ctx context.Context, cmd task.SubmitCommand) (domaintasks.Task, bool, error)
 }
 
 // Querier is the read side. Satisfied by *task.Querier.
@@ -58,11 +58,19 @@ func (h *Handler) CreateTask(ctx context.Context, req *oas.CreateTaskRequest) (o
 
 	key, _ := req.IdempotencyKey.Get() // "" when absent - Commander treats that as no key
 
-	t, err := h.cmd.Submit(ctx, task.SubmitCommand{
+	t, created, err := h.cmd.Submit(ctx, task.SubmitCommand{
 		Handler:        req.Handler,
 		Payload:        payloadJSON,
 		IdempotencyKey: key,
 	})
+	if ce, ok := errors.AsType[*task.ConflictError](err); ok {
+		// A client error, not ours: returned as a typed 409, so not logged as one.
+		return &oas.IdempotencyConflict{
+			Code:           oas.IdempotencyConflictCodeIdempotencyConflict,
+			Message:        "idempotency key already used with a different payload",
+			ExistingTaskID: ce.ExistingTaskID,
+		}, nil
+	}
 	if err != nil {
 		h.log.ErrorContext(ctx, "create task failed", "err", err)
 		return nil, fmt.Errorf("submit task: %w", err)
@@ -74,7 +82,10 @@ func (h *Handler) CreateTask(ctx context.Context, req *oas.CreateTaskRequest) (o
 		h.log.ErrorContext(ctx, "map task to response failed", "err", err)
 		return nil, err
 	}
-	return &dto, nil
+	if !created {
+		return (*oas.CreateTaskOK)(&dto), nil
+	}
+	return (*oas.CreateTaskCreated)(&dto), nil
 }
 
 // GetTask returns the task with the given ID, or a 404 when it does not exist.

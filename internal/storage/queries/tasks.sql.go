@@ -173,43 +173,37 @@ func (q *Queries) GetArchivedTaskByID(ctx context.Context, id uuid.UUID) (TasksA
 	return i, err
 }
 
+const getIdempotencyRecord = `-- name: GetIdempotencyRecord :one
+SELECT task_id, payload_hash FROM idempotency_keys
+WHERE tenant_id = $1 AND handler = $2 AND idempotency_key = $3
+`
+
+type GetIdempotencyRecordParams struct {
+	TenantID       uuid.UUID `json:"tenant_id"`
+	Handler        string    `json:"handler"`
+	IdempotencyKey string    `json:"idempotency_key"`
+}
+
+type GetIdempotencyRecordRow struct {
+	TaskID      uuid.UUID `json:"task_id"`
+	PayloadHash []byte    `json:"payload_hash"`
+}
+
+// The ledger replay: what a key resolves to once its insert has collided.
+// Keyed by the full primary key, so the read is scoped exactly as the gate is.
+func (q *Queries) GetIdempotencyRecord(ctx context.Context, arg GetIdempotencyRecordParams) (GetIdempotencyRecordRow, error) {
+	row := q.db.QueryRow(ctx, getIdempotencyRecord, arg.TenantID, arg.Handler, arg.IdempotencyKey)
+	var i GetIdempotencyRecordRow
+	err := row.Scan(&i.TaskID, &i.PayloadHash)
+	return i, err
+}
+
 const getTaskByID = `-- name: GetTaskByID :one
 SELECT id, idempotency_key, payload, status, created_at, handler, tenant_id, priority, earliest_at, attempt, max_attempts, shard_id, cancel_requested, updated_at, started_at, worker_id, lease_until, lease_epoch, trace_id FROM tasks WHERE id = $1
 `
 
 func (q *Queries) GetTaskByID(ctx context.Context, id uuid.UUID) (Task, error) {
 	row := q.db.QueryRow(ctx, getTaskByID, id)
-	var i Task
-	err := row.Scan(
-		&i.ID,
-		&i.IdempotencyKey,
-		&i.Payload,
-		&i.Status,
-		&i.CreatedAt,
-		&i.Handler,
-		&i.TenantID,
-		&i.Priority,
-		&i.EarliestAt,
-		&i.Attempt,
-		&i.MaxAttempts,
-		&i.ShardID,
-		&i.CancelRequested,
-		&i.UpdatedAt,
-		&i.StartedAt,
-		&i.WorkerID,
-		&i.LeaseUntil,
-		&i.LeaseEpoch,
-		&i.TraceID,
-	)
-	return i, err
-}
-
-const getTaskByIdempotencyKey = `-- name: GetTaskByIdempotencyKey :one
-SELECT id, idempotency_key, payload, status, created_at, handler, tenant_id, priority, earliest_at, attempt, max_attempts, shard_id, cancel_requested, updated_at, started_at, worker_id, lease_until, lease_epoch, trace_id FROM tasks WHERE idempotency_key = $1
-`
-
-func (q *Queries) GetTaskByIdempotencyKey(ctx context.Context, idempotencyKey *string) (Task, error) {
-	row := q.db.QueryRow(ctx, getTaskByIdempotencyKey, idempotencyKey)
 	var i Task
 	err := row.Scan(
 		&i.ID,

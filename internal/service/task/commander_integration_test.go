@@ -5,10 +5,12 @@ package task_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool" //nolint:depguard // test fixture: the test owns the database, the Commander still reaches it only through ports
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
@@ -158,8 +160,9 @@ func TestSubmit_SameKeyTwiceYieldsOneTask(t *testing.T) {
 	}
 
 	// 1. First submit: a new task, in exactly one transaction.
-	first, err := commander.Submit(ctx, cmd)
+	first, created, err := commander.Submit(ctx, cmd)
 	require.NoError(t, err)
+	require.True(t, created)
 	require.Equal(t, 1, tx.n, "the first submit commits exactly one transaction")
 
 	stored, err := tasksRepo.Get(ctx, first.ID())
@@ -174,22 +177,24 @@ func TestSubmit_SameKeyTwiceYieldsOneTask(t *testing.T) {
 	// of them, and leaves the fast path permanently cold.
 	key, err := domaintasks.NewIdempotencyKey(cmd.IdempotencyKey)
 	require.NoError(t, err)
-	cachedID, hit, err := store.Lookup(ctx, key)
+	cached, hit, err := store.Lookup(ctx, stored.Handler(), key)
 	require.NoError(t, err)
 	require.True(t, hit, "Lookup must find what the post-commit Record wrote - do they use the same Redis key?")
-	assert.Equal(t, first.ID(), cachedID)
+	assert.Equal(t, first.ID(), cached.TaskID)
 
 	// 3. Same key, warm cache: answered by phase 1, no transaction opened.
-	second, err := commander.Submit(ctx, cmd)
+	second, created, err := commander.Submit(ctx, cmd)
 	require.NoError(t, err)
+	assert.False(t, created, "a replay is not a creation")
 	assert.Equal(t, first.ID(), second.ID())
 	assert.Equal(t, 1, tx.n, "a cache hit must not open a transaction")
 
 	// 4. Same key, cache evicted: the ledger is now the only gate. The
 	// transaction opens, its 23505 rolls it back, and the replay finds the task.
 	require.NoError(t, rdb.FlushDB(ctx).Err())
-	third, err := commander.Submit(ctx, cmd)
+	third, created, err := commander.Submit(ctx, cmd)
 	require.NoError(t, err)
+	assert.False(t, created, "a replay is not a creation")
 	assert.Equal(t, first.ID(), third.ID(), "the ledger must replay the original task")
 	assert.Equal(t, 2, tx.n, "a cold cache costs one transaction, and the ledger rolls it back")
 
@@ -206,4 +211,122 @@ func TestSubmit_SameKeyTwiceYieldsOneTask(t *testing.T) {
 	assert.Equal(t, 1, countRows(t, pool,
 		`SELECT count(*) FROM outbox_events WHERE type = 'task.submitted.v1' AND aggregate_id = $1`,
 		first.ID()))
+}
+
+// TestSubmit_IdempotencyConflict is ADR 0005's acceptance test, end to end:
+// the conflict is caught from Redis while it is warm, from the ledger once it
+// is not, and still from the ledger after the task has been archived. The
+// transaction count tells the paths apart, because a 409 looks the same from
+// all three.
+func TestSubmit_IdempotencyConflict(t *testing.T) {
+	pool := startPostgresWithMigrations(t)
+	rdb := startRedis(t)
+	ctx := context.Background()
+
+	txm := txmgr.New(pool)
+	tx := &countingTx{inner: txm}
+	store := task.NewRedisIdempotencyStore(rdb, slog.New(slog.NewTextHandler(t.Output(), nil)))
+	commander := task.NewCommander(repotasks.New(txm), outbox.New(txm), tx, store, acceptAnyHandler{})
+
+	// A is sent first in a non-canonical order. Were it already canonical, a ledger
+	// that hashed raw bytes would pass every step below by coincidence.
+	const payloadA, payloadAReordered, payloadB = `{"b":[1,2], "a":1}`, `{"a":1,"b":[1,2]}`, `{"a":2}`
+	submit := func(payload string) (domaintasks.Task, bool, error) {
+		return commander.Submit(ctx, task.SubmitCommand{
+			Handler: "echo", Payload: json.RawMessage(payload), IdempotencyKey: "k-1",
+		})
+	}
+	requireConflict := func(err error, existing uuid.UUID, msgAndArgs ...any) {
+		t.Helper()
+		ce, ok := errors.AsType[*task.ConflictError](err)
+		require.True(t, ok, msgAndArgs...)
+		assert.Equal(t, existing, ce.ExistingTaskID)
+	}
+
+	// 1. Payload A creates the task.
+	first, created, err := submit(payloadA)
+	require.NoError(t, err)
+	require.True(t, created)
+	require.Equal(t, 1, tx.n)
+
+	// 2. A again, keys reordered: the same request. Warm cache, no transaction.
+	again, created, err := submit(payloadAReordered)
+	require.NoError(t, err)
+	assert.False(t, created)
+	assert.Equal(t, first.ID(), again.ID())
+	assert.Equal(t, 1, tx.n, "a warm replay opens no transaction")
+
+	// 3. Payload B, warm cache: the conflict is decided from Redis alone.
+	_, _, err = submit(payloadB)
+	requireConflict(err, first.ID(), "warm cache, different payload")
+	assert.Equal(t, 1, tx.n, "a warm conflict opens no transaction")
+
+	// 4. B, cache flushed: now the ledger insert is the gate. One transaction
+	// opens and rolls back - the write protocol, not a leak.
+	require.NoError(t, rdb.FlushDB(ctx).Err())
+	_, _, err = submit(payloadB)
+	requireConflict(err, first.ID(), "cold cache, different payload")
+	assert.Equal(t, 2, tx.n)
+
+	// 5. The task finishes and is archived; cache flushed again. A must still
+	// replay (D25): the ledger names the task, and Get finds it in the archive.
+	_, err = pool.Exec(ctx, `UPDATE tasks SET status = 'succeeded' WHERE id = $1`, first.ID())
+	require.NoError(t, err)
+	require.NoError(t, rdb.FlushDB(ctx).Err())
+	replayed, created, err := submit(payloadAReordered)
+	require.NoError(t, err, "a same-payload resubmit after archival is a replay, not a 500")
+	assert.False(t, created)
+	assert.Equal(t, first.ID(), replayed.ID())
+	assert.Equal(t, domaintasks.StatusSucceeded, replayed.Status())
+	assert.Equal(t, 3, tx.n)
+
+	// 6. ...and B is still refused, though the tasks row is gone entirely.
+	require.NoError(t, rdb.FlushDB(ctx).Err())
+	_, _, err = submit(payloadB)
+	requireConflict(err, first.ID(), "after archival, different payload")
+	assert.Equal(t, 4, tx.n)
+
+	// 7. Six submits, one of everything - and the ledger holds the CANONICAL
+	// fingerprint, which is what made steps 2 and 5 replays.
+	assert.Equal(t, 0, countRows(t, pool, `SELECT count(*) FROM tasks`))
+	assert.Equal(t, 1, countRows(t, pool, `SELECT count(*) FROM tasks_archive`))
+	assert.Equal(t, 1, countRows(t, pool, `SELECT count(*) FROM idempotency_keys`))
+	assert.Equal(t, 1, countRows(t, pool, `SELECT count(*) FROM outbox_events`))
+	var hash []byte
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT payload_hash FROM idempotency_keys WHERE idempotency_key = 'k-1'`).Scan(&hash))
+	want, err := domaintasks.NewPayloadFingerprint(json.RawMessage(payloadAReordered))
+	require.NoError(t, err)
+	assert.Equal(t, want[:], hash)
+}
+
+// TestSubmit_KeyIsScopedByHandler is D28's regression test. The ledger's
+// primary key is (tenant, handler, key), so the same key under another handler
+// is another submit. Before C3 the Redis key was the bare idempotency key, and
+// the second submit below came back with the FIRST handler's task.
+func TestSubmit_KeyIsScopedByHandler(t *testing.T) {
+	pool := startPostgresWithMigrations(t)
+	rdb := startRedis(t)
+	ctx := context.Background()
+
+	txm := txmgr.New(pool)
+	store := task.NewRedisIdempotencyStore(rdb, slog.New(slog.NewTextHandler(t.Output(), nil)))
+	commander := task.NewCommander(repotasks.New(txm), outbox.New(txm), txm, store, acceptAnyHandler{})
+
+	submit := func(handler string) domaintasks.Task {
+		t.Helper()
+		got, created, err := commander.Submit(ctx, task.SubmitCommand{
+			Handler: handler, Payload: json.RawMessage(`{}`), IdempotencyKey: "k-1",
+		})
+		require.NoError(t, err)
+		require.True(t, created, "%s: the first submit under this handler creates", handler)
+		return got
+	}
+
+	echo := submit("echo")
+	other := submit("other") // the cache is warm for echo's k-1 here
+
+	assert.NotEqual(t, echo.ID(), other.ID())
+	assert.Equal(t, "other", other.Handler().Name(), "a warm entry for one handler must not answer another")
+	assert.Equal(t, 2, countRows(t, pool, `SELECT count(*) FROM idempotency_keys`))
 }

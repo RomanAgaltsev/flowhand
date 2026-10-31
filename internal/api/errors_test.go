@@ -10,11 +10,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/RomanAgaltsev/flowhand/internal/api"
 	"github.com/RomanAgaltsev/flowhand/internal/api/oas"
+	"github.com/RomanAgaltsev/flowhand/internal/service/task"
 )
 
 // TestErrorEnvelopes_OnTheWire pins the contract api/openapi.yaml publishes:
@@ -70,6 +72,11 @@ func TestErrorEnvelopes_OnTheWire(t *testing.T) {
 			name: "handler error on get", method: http.MethodGet, path: "/v1/tasks/0198f0ec-0000-7000-8000-000000000000",
 			wantCode: http.StatusInternalServerError, wantSymbol: "internal_error",
 		},
+		{
+			name: "non-ascii idempotency key", method: http.MethodPost, path: "/v1/tasks",
+			body:     `{"handler":"echo","idempotency_key":"ключ"}`,
+			wantCode: http.StatusBadRequest, wantSymbol: "invalid_request_body", wantDetail: "idempotency_key",
+		},
 	}
 
 	for _, tt := range tests {
@@ -123,4 +130,47 @@ func TestErrorEnvelopes_OnTheWire(t *testing.T) {
 				"5xx message must not leak the underlying error")
 		})
 	}
+}
+
+// TestIdempotencyConflict_OnTheWire pins the 409 the way the table above pins
+// every other error: status, JSON content type, the stable symbol, and the
+// field only this envelope carries. It needs its own server because the table
+// shares one Commander that always fails with a plain error.
+func TestIdempotencyConflict_OnTheWire(t *testing.T) {
+	existing := uuid.MustParse("0198f0ec-0000-7000-8000-000000000001")
+	h := api.NewHandler(
+		&fakeCommander{err: &task.ConflictError{ExistingTaskID: existing}},
+		&fakeQuerier{}, discardLogger(),
+	)
+	oasSrv, err := oas.NewServer(h, oas.WithErrorHandler(api.ErrorHandler))
+	require.NoError(t, err)
+	ts := httptest.NewServer(oasSrv)
+	t.Cleanup(ts.Close)
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, ts.URL+"/v1/tasks",
+		strings.NewReader(`{"handler":"echo","idempotency_key":"k-1","payload":{"a":2}}`))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := ts.Client().Do(req)
+	require.NoError(t, err)
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Logf("close response body: %v", err)
+		}
+	}()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	assert.Equal(t, http.StatusConflict, resp.StatusCode)
+	assert.Contains(t, resp.Header.Get("Content-Type"), "application/json")
+	var envelope struct {
+		Code           string `json:"code"`
+		Message        string `json:"message"`
+		ExistingTaskID string `json:"existing_task_id"`
+	}
+	require.NoError(t, json.Unmarshal(body, &envelope), "body was %q", body)
+	assert.Equal(t, "idempotency_conflict", envelope.Code)
+	assert.NotEmpty(t, envelope.Message)
+	assert.Equal(t, existing.String(), envelope.ExistingTaskID)
 }

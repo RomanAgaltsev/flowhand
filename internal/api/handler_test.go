@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"testing"
@@ -22,14 +23,15 @@ import (
 // fakeCommander records the command it received so a test can assert the
 // handler translates the request faithfully - and decides nothing else.
 type fakeCommander struct {
-	task domaintasks.Task
-	err  error
-	got  task.SubmitCommand
+	task    domaintasks.Task
+	created bool
+	err     error
+	got     task.SubmitCommand
 }
 
-func (f *fakeCommander) Submit(_ context.Context, cmd task.SubmitCommand) (domaintasks.Task, error) {
+func (f *fakeCommander) Submit(_ context.Context, cmd task.SubmitCommand) (domaintasks.Task, bool, error) {
 	f.got = cmd
-	return f.task, f.err
+	return f.task, f.created, f.err
 }
 
 type fakeQuerier struct {
@@ -61,6 +63,7 @@ func TestCreateTask_HappyPath(t *testing.T) {
 			1,
 			created,
 		),
+		created: true,
 	}
 	h := api.NewHandler(cmd, &fakeQuerier{}, discardLogger())
 
@@ -70,7 +73,7 @@ func TestCreateTask_HappyPath(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	got, ok := resp.(*oas.Task) // narrow the union to the 201 case
+	got, ok := resp.(*oas.CreateTaskCreated) // narrow the union to the 201 case
 	require.True(t, ok)
 	assert.Equal(t, id, got.ID)
 	assert.Equal(t, oas.TaskStatusPending, got.Status)
@@ -233,4 +236,44 @@ func TestGetTask_UnmappedStatusIs500(t *testing.T) {
 
 	_, err := h.GetTask(context.Background(), oas.GetTaskParams{ID: uuid.Must(uuid.NewV7())})
 	require.ErrorContains(t, err, "quarantined")
+}
+
+func TestCreateTask_ReplayIs200(t *testing.T) {
+	// Same key, same payload: the task already exists, so the answer is its
+	// current state under 200 - not a second 201 claiming it was just created.
+	id := uuid.Must(uuid.NewV7())
+	at := time.Now().UTC()
+	h := api.NewHandler(&fakeCommander{
+		task: domaintasks.FromPersistence(id, domaintasks.StatusRunning,
+			domaintasks.HandlerFromPersistence("echo"), 0, json.RawMessage(`{}`), nil, 0, at, 1, at),
+		created: false,
+	}, &fakeQuerier{}, discardLogger())
+
+	resp, err := h.CreateTask(context.Background(), &oas.CreateTaskRequest{
+		Handler: "echo", IdempotencyKey: oas.NewOptString("key-1"),
+	})
+	require.NoError(t, err)
+
+	got, ok := resp.(*oas.CreateTaskOK)
+	require.True(t, ok, "a replay must be the 200 case, got %T", resp)
+	assert.Equal(t, id, got.ID)
+	assert.Equal(t, oas.TaskStatusRunning, got.Status)
+}
+
+func TestCreateTask_ConflictIs409(t *testing.T) {
+	existing := uuid.Must(uuid.NewV7())
+	h := api.NewHandler(&fakeCommander{
+		// Wrapped, as it would be on its way up: AsType must see through %w.
+		err: fmt.Errorf("submit: %w", &task.ConflictError{ExistingTaskID: existing}),
+	}, &fakeQuerier{}, discardLogger())
+
+	resp, err := h.CreateTask(context.Background(), &oas.CreateTaskRequest{
+		Handler: "echo", IdempotencyKey: oas.NewOptString("key-1"),
+	})
+	require.NoError(t, err, "a conflict is a typed response, not an error for the 500 path")
+
+	got, ok := resp.(*oas.IdempotencyConflict)
+	require.True(t, ok, "got %T", resp)
+	assert.Equal(t, oas.IdempotencyConflictCodeIdempotencyConflict, got.Code)
+	assert.Equal(t, existing, got.ExistingTaskID)
 }

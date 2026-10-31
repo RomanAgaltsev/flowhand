@@ -4,8 +4,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/RomanAgaltsev/flowhand/internal/generic/cache"
 	"github.com/google/uuid"
+
+	"github.com/RomanAgaltsev/flowhand/internal/generic/cache"
 )
 
 // lruCache adapts generic LRU to the TaskCache port. It is a type

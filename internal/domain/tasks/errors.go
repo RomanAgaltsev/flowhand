@@ -22,19 +22,17 @@ var ErrInvalidPriority = errors.New("priority out of range")
 // so errors.Is against either the umbrella or the specific reason works.
 var ErrInvalidIdempotencyKey = errors.New("invalid idempotency key")
 
-var (
-	// ErrIdempotencyKeyEmpty is returned when the key is the empty string.
-	ErrIdempotencyKeyEmpty = fmt.Errorf("%w: empty", ErrInvalidIdempotencyKey)
+// ErrIdempotencyKeyEmpty is returned when the key is the empty string.
+var ErrIdempotencyKeyEmpty = fmt.Errorf("%w: empty", ErrInvalidIdempotencyKey)
 
-	// ErrIdempotencyKeyNotASCII is returned when the key holds a byte outside
-	// ASCII. Checked before the length bound, so a long non-ASCII key reports
-	// this rather than the misleading "too long".
-	ErrIdempotencyKeyNotASCII = fmt.Errorf("%w: contains a non-ASCII byte", ErrInvalidIdempotencyKey)
+// ErrIdempotencyKeyNotASCII is returned when the key holds a byte outside
+// ASCII. Checked before the length bound, so a long non-ASCII key reports
+// this rather than the misleading "too long".
+var ErrIdempotencyKeyNotASCII = fmt.Errorf("%w: contains a non-ASCII byte", ErrInvalidIdempotencyKey)
 
-	// ErrIdempotencyKeyTooLong is returned when the key exceeds
-	// MaxIdempotencyKeyBytes. Keys are ASCII, so bytes and runes coincide.
-	ErrIdempotencyKeyTooLong = fmt.Errorf("%w: longer than %d bytes", ErrInvalidIdempotencyKey, MaxIdempotencyKeyBytes)
-)
+// ErrIdempotencyKeyTooLong is returned when the key exceeds
+// MaxIdempotencyKeyBytes. Keys are ASCII, so bytes and runes coincide.
+var ErrIdempotencyKeyTooLong = fmt.Errorf("%w: longer than %d bytes", ErrInvalidIdempotencyKey, MaxIdempotencyKeyBytes)
 
 // ErrInvalidShardID is returned when a stored shard_id is outside the uint16
 // range the domain represents. See D8.
@@ -66,3 +64,8 @@ var ErrInvalidMaxAttempts = errors.New("max attempts must be greater than zero")
 // ErrNilPayload is returned when a task is submitted without a payload. An
 // empty JSON object is a legitimate payload; a nil one is a caller bug.
 var ErrNilPayload = errors.New("nil payload")
+
+// ErrInvalidPayload is returned when a payload is not exactly one JSON value,
+// so it cannot be fingerprinted. Nothing on the HTTP path produces one - ogen
+// decodes the body first - so this guards the other callers of Submit.
+var ErrInvalidPayload = errors.New("payload is not valid json")

@@ -14,15 +14,24 @@ type CreateTaskBadRequest Error
 
 func (*CreateTaskBadRequest) createTaskRes() {}
 
+type CreateTaskCreated Task
+
+func (*CreateTaskCreated) createTaskRes() {}
+
 type CreateTaskInternalServerError Error
 
 func (*CreateTaskInternalServerError) createTaskRes() {}
 
+type CreateTaskOK Task
+
+func (*CreateTaskOK) createTaskRes() {}
+
 // Ref: #/components/schemas/CreateTaskRequest
 type CreateTaskRequest struct {
-	Handler        string                      `json:"handler"`
-	Payload        OptCreateTaskRequestPayload `json:"payload"`
-	IdempotencyKey OptString                   `json:"idempotency_key"`
+	Handler string                      `json:"handler"`
+	Payload OptCreateTaskRequestPayload `json:"payload"`
+	// ASCII only, so the key is the same bytes in every client.
+	IdempotencyKey OptString `json:"idempotency_key"`
 }
 
 // GetHandler returns the value of Handler.
@@ -101,10 +110,11 @@ func (s *Error) SetMessage(val string) {
 type ErrorCode string
 
 const (
-	ErrorCodeInvalidRequestBody ErrorCode = "invalid_request_body"
-	ErrorCodeInvalidParameter   ErrorCode = "invalid_parameter"
-	ErrorCodeTaskNotFound       ErrorCode = "task_not_found"
-	ErrorCodeInternalError      ErrorCode = "internal_error"
+	ErrorCodeInvalidRequestBody  ErrorCode = "invalid_request_body"
+	ErrorCodeInvalidParameter    ErrorCode = "invalid_parameter"
+	ErrorCodeTaskNotFound        ErrorCode = "task_not_found"
+	ErrorCodeIdempotencyConflict ErrorCode = "idempotency_conflict"
+	ErrorCodeInternalError       ErrorCode = "internal_error"
 )
 
 // AllValues returns all ErrorCode values.
@@ -113,6 +123,7 @@ func (ErrorCode) AllValues() []ErrorCode {
 		ErrorCodeInvalidRequestBody,
 		ErrorCodeInvalidParameter,
 		ErrorCodeTaskNotFound,
+		ErrorCodeIdempotencyConflict,
 		ErrorCodeInternalError,
 	}
 }
@@ -125,6 +136,8 @@ func (s ErrorCode) MarshalText() ([]byte, error) {
 	case ErrorCodeInvalidParameter:
 		return []byte(s), nil
 	case ErrorCodeTaskNotFound:
+		return []byte(s), nil
+	case ErrorCodeIdempotencyConflict:
 		return []byte(s), nil
 	case ErrorCodeInternalError:
 		return []byte(s), nil
@@ -145,6 +158,9 @@ func (s *ErrorCode) UnmarshalText(data []byte) error {
 	case ErrorCodeTaskNotFound:
 		*s = ErrorCodeTaskNotFound
 		return nil
+	case ErrorCodeIdempotencyConflict:
+		*s = ErrorCodeIdempotencyConflict
+		return nil
 	case ErrorCodeInternalError:
 		*s = ErrorCodeInternalError
 		return nil
@@ -160,6 +176,114 @@ func (*GetTaskInternalServerError) getTaskRes() {}
 type GetTaskNotFound Error
 
 func (*GetTaskNotFound) getTaskRes() {}
+
+// Merged schema.
+// Ref: #/components/schemas/IdempotencyConflict
+type IdempotencyConflict struct {
+	// Stable machine-readable error symbol. Clients should branch on this, never on `message`, which is
+	// human-facing and may change.
+	Code IdempotencyConflictCode `json:"code"`
+	// Human-facing detail. For 4xx it names what about the request was wrong; for 5xx it stays
+	// deliberately opaque so server internals never reach the wire.
+	Message        string    `json:"message"`
+	ExistingTaskID uuid.UUID `json:"existing_task_id"`
+}
+
+// GetCode returns the value of Code.
+func (s *IdempotencyConflict) GetCode() IdempotencyConflictCode {
+	return s.Code
+}
+
+// GetMessage returns the value of Message.
+func (s *IdempotencyConflict) GetMessage() string {
+	return s.Message
+}
+
+// GetExistingTaskID returns the value of ExistingTaskID.
+func (s *IdempotencyConflict) GetExistingTaskID() uuid.UUID {
+	return s.ExistingTaskID
+}
+
+// SetCode sets the value of Code.
+func (s *IdempotencyConflict) SetCode(val IdempotencyConflictCode) {
+	s.Code = val
+}
+
+// SetMessage sets the value of Message.
+func (s *IdempotencyConflict) SetMessage(val string) {
+	s.Message = val
+}
+
+// SetExistingTaskID sets the value of ExistingTaskID.
+func (s *IdempotencyConflict) SetExistingTaskID(val uuid.UUID) {
+	s.ExistingTaskID = val
+}
+
+func (*IdempotencyConflict) createTaskRes() {}
+
+// Stable machine-readable error symbol. Clients should branch on this, never on `message`, which is
+// human-facing and may change.
+type IdempotencyConflictCode string
+
+const (
+	IdempotencyConflictCodeInvalidRequestBody  IdempotencyConflictCode = "invalid_request_body"
+	IdempotencyConflictCodeInvalidParameter    IdempotencyConflictCode = "invalid_parameter"
+	IdempotencyConflictCodeTaskNotFound        IdempotencyConflictCode = "task_not_found"
+	IdempotencyConflictCodeIdempotencyConflict IdempotencyConflictCode = "idempotency_conflict"
+	IdempotencyConflictCodeInternalError       IdempotencyConflictCode = "internal_error"
+)
+
+// AllValues returns all IdempotencyConflictCode values.
+func (IdempotencyConflictCode) AllValues() []IdempotencyConflictCode {
+	return []IdempotencyConflictCode{
+		IdempotencyConflictCodeInvalidRequestBody,
+		IdempotencyConflictCodeInvalidParameter,
+		IdempotencyConflictCodeTaskNotFound,
+		IdempotencyConflictCodeIdempotencyConflict,
+		IdempotencyConflictCodeInternalError,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s IdempotencyConflictCode) MarshalText() ([]byte, error) {
+	switch s {
+	case IdempotencyConflictCodeInvalidRequestBody:
+		return []byte(s), nil
+	case IdempotencyConflictCodeInvalidParameter:
+		return []byte(s), nil
+	case IdempotencyConflictCodeTaskNotFound:
+		return []byte(s), nil
+	case IdempotencyConflictCodeIdempotencyConflict:
+		return []byte(s), nil
+	case IdempotencyConflictCodeInternalError:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *IdempotencyConflictCode) UnmarshalText(data []byte) error {
+	switch IdempotencyConflictCode(data) {
+	case IdempotencyConflictCodeInvalidRequestBody:
+		*s = IdempotencyConflictCodeInvalidRequestBody
+		return nil
+	case IdempotencyConflictCodeInvalidParameter:
+		*s = IdempotencyConflictCodeInvalidParameter
+		return nil
+	case IdempotencyConflictCodeTaskNotFound:
+		*s = IdempotencyConflictCodeTaskNotFound
+		return nil
+	case IdempotencyConflictCodeIdempotencyConflict:
+		*s = IdempotencyConflictCodeIdempotencyConflict
+		return nil
+	case IdempotencyConflictCodeInternalError:
+		*s = IdempotencyConflictCodeInternalError
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
 
 // NewOptCreateTaskRequestPayload returns new OptCreateTaskRequestPayload with value set to v.
 func NewOptCreateTaskRequestPayload(v CreateTaskRequestPayload) OptCreateTaskRequestPayload {
@@ -292,8 +416,7 @@ func (s *Task) SetCreatedAt(val time.Time) {
 	s.CreatedAt = val
 }
 
-func (*Task) createTaskRes() {}
-func (*Task) getTaskRes()    {}
+func (*Task) getTaskRes() {}
 
 // Lifecycle state. `retry_scheduled` is a transient scheduler state surfaced for observability;
 // `dead_lettered` is terminal.

@@ -155,7 +155,10 @@ func TestRepo_GetMissingIsErrNotFound(t *testing.T) {
 	_, err := repo.Get(context.Background(), uuid.Must(uuid.NewV7()))
 	require.ErrorIs(t, err, domaintasks.ErrNotFound)
 
-	_, err = repo.GetByIdempotencyKey(context.Background(), "never-used")
+	echo := domaintasks.HandlerFromPersistence("echo")
+	key, err := domaintasks.NewIdempotencyKey("never-used")
+	require.NoError(t, err)
+	_, err = repo.GetIdempotencyRecord(context.Background(), echo, key)
 	require.ErrorIs(t, err, domaintasks.ErrNotFound)
 }
 
@@ -303,4 +306,38 @@ func TestRepo_GetFallsBackToArchive(t *testing.T) {
 	// write, so a write path that found one would be a bug, not a feature.
 	_, err = repo.GetForUpdate(ctx, tt.ID())
 	require.ErrorIs(t, err, domaintasks.ErrNotFound)
+}
+
+// TestRepo_GetIdempotencyRecord pins the ledger read the C3 replay depends on:
+// it returns what Insert wrote, it is scoped by handler exactly as the primary
+// key is, and it still answers after the task row has moved to the archive.
+func TestRepo_GetIdempotencyRecord(t *testing.T) {
+	pool := startPostgresWithMigrations(t)
+	repo := repotasks.New(txmgr.New(pool))
+	ctx := context.Background()
+
+	tt := submitted(t, json.RawMessage(`{"b":2,"a":1}`))
+	raw := "k-1"
+	require.NoError(t, repo.Insert(ctx, tt, &raw))
+	key, err := domaintasks.NewIdempotencyKey(raw)
+	require.NoError(t, err)
+	wantFP, err := domaintasks.NewPayloadFingerprint(json.RawMessage(`{"a":1,"b":2}`))
+	require.NoError(t, err)
+
+	rec, err := repo.GetIdempotencyRecord(ctx, tt.Handler(), key)
+	require.NoError(t, err)
+	assert.Equal(t, tt.ID(), rec.TaskID)
+	assert.Equal(t, wantFP, rec.Fingerprint,
+		"the ledger must hold the CANONICAL fingerprint - the reordered payload hashes the same")
+
+	// The same key under another handler is another ledger row - here, none.
+	_, err = repo.GetIdempotencyRecord(ctx, domaintasks.HandlerFromPersistence("other"), key)
+	require.ErrorIs(t, err, domaintasks.ErrNotFound)
+
+	// The ledger outlives the hot row: archive the task and read again.
+	_, err = pool.Exec(ctx, `UPDATE tasks SET status = 'succeeded' WHERE id = $1`, tt.ID())
+	require.NoError(t, err)
+	rec, err = repo.GetIdempotencyRecord(ctx, tt.Handler(), key)
+	require.NoError(t, err, "the ledger row must survive the task's archival")
+	assert.Equal(t, tt.ID(), rec.TaskID)
 }
