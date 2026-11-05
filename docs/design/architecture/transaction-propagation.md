@@ -54,15 +54,10 @@ boundary:
 
 ```go
 err = c.tx.WithinTx(ctx, func(ctx context.Context) error {
-	if err := c.tasks.Insert(ctx, t, key); err != nil {
+	if err := c.tasks.Insert(ctx, t, claim); err != nil {
 		return err
 	}
-	for ev := range t.PullEvents() {
-		if err := c.outbox.Append(ctx, ev); err != nil {
-			return err
-		}
-	}
-	return nil
+	return c.outbox.Append(ctx, slices.Collect(t.PullEvents())...)
 })
 ```
 

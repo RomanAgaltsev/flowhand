@@ -61,7 +61,7 @@ func Run(ctx context.Context, cfg *config.Config, h *api.Handler, reg *prometheu
 	case err := <-errCh:
 		return err
 	case <-ctx.Done():
-		sctx, cancel := context.WithTimeout(context.Background(), cfg.HTTP.ShutdownTimeout) //nolint:contextcheck // deliberate detached shutdown context (see M1)
+		sctx, cancel := context.WithTimeout(context.Background(), cfg.HTTP.ShutdownTimeout) //nolint:contextcheck // deliberate detached shutdown context
 		defer cancel()
 		if err := srv.Shutdown(sctx); err != nil { //nolint:contextcheck // deliberate detached shutdown context
 			return err

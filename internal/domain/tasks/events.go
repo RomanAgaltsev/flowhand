@@ -123,8 +123,8 @@ func NewCancelled(t Task, reason string, now time.Time) Event {
 // linter checks switches over Kind, so a seventh transition added without a name
 // here fails CI. A map or array literal buys nothing and forfeits that.
 //
-// The six names are in this task's Design of record. They are a published
-// contract - a typo here is a silently-dropped consumer, not a compile error.
+// The six names are a published contract (outbox -> Kafka): a typo here is a
+// silently-dropped consumer, not a compile error.
 func (e Event) EventName() string {
 	switch e.kind {
 	case KindSubmitted:
@@ -155,9 +155,9 @@ func (e Event) AggregateID() uuid.UUID { return e.taskID }
 // optional: the fields are unexported, and reflection would marshal them to {}.
 //
 // The keys are snake_case, matching the envelope that wraps them
-// (internal/repository/outbox/mapper.go). The key order per Kind is in this
-// task's Design of record, and it is pinned byte-for-byte by the goldens in
-// Step 3. An unknown Kind must return an error, not empty bytes.
+// (internal/repository/outbox/mapper.go). The key order per Kind is pinned
+// byte-for-byte by TestPayloadGoldens. An unknown Kind must return an error, not
+// empty bytes.
 //
 // This is a published format.
 func (e Event) MarshalJSON() ([]byte, error) {

@@ -44,4 +44,6 @@ READ transaction.
 
 Fan-in asks "was I the last parent to finish?" of a count two finishers can read at once:
 write skew, which only SERIALIZABLE prevents. It will use `WithinTxOpts`, retry on 40001, and
-must be the outermost transaction, since a nested call inherits the outer level.
+must be the outermost transaction, since a nested call joins the outer one. `WithinTxOpts`
+enforces that: a nested request for a stronger level than the outer transaction has fails with
+`ErrIsolationMismatch` rather than silently running weaker.

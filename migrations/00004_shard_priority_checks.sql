@@ -1,5 +1,5 @@
 -- Range constraints for the two columns whose SQL type is deliberately wider than
--- the domain type mapping onto them (D8, resolved in D1):
+-- the domain type mapping onto them:
 --
 --   priority SMALLINT (int16) -> tasks.Priority (uint8, 0..MaxPriority=9)
 --   shard_id INT      (int32) -> tasks.ShardID  (uint16, 0..65535)
@@ -13,8 +13,8 @@
 
 -- +goose Up
 
--- NOT VALID per migration-discipline.md ("Add a CHECK constraint -> NOT VALID +
--- VALIDATE in two migrations"). NOT VALID takes a brief lock and skips the full
+-- A CHECK is added as NOT VALID, then VALIDATEd in a second migration. NOT VALID
+-- takes a brief lock and skips the full
 -- table scan, so this is safe to run against a hot queue table under load; it
 -- still enforces the range on every subsequent INSERT and UPDATE.
 --

@@ -1,10 +1,10 @@
--- Second half of the NOT VALID + VALIDATE pair from 00004, per
--- migration-discipline.md. VALIDATE CONSTRAINT scans the table to prove the
+-- Second half of the NOT VALID + VALIDATE pair from 00004. VALIDATE CONSTRAINT scans the table to prove the
 -- existing rows satisfy the range, but takes only SHARE UPDATE EXCLUSIVE — it
 -- does not block reads or writes, unlike a plain ADD CONSTRAINT.
 --
 -- Split into its own migration so the scan can be deferred to a quiet window on
--- a large table without holding up the deploy that adds the constraint.
+-- a large table without holding up the deploy that adds the constraint. That takes
+-- applying up to 00004 only (`goose up-to 4`): `flowhand migrate up` runs both.
 
 -- +goose Up
 

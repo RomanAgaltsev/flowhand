@@ -90,6 +90,10 @@ DROP INDEX tasks_idempotency_key_uniq;
 -- `running` -> `retry_scheduled` directly and never passes through `failed`, because
 -- the archive trigger treats `failed` as terminal and would move the row out
 -- mid-retry. Per-attempt failures are recorded on task_attempts instead.
+--
+-- A plain ADD CONSTRAINT, unlike 00004's NOT VALID + VALIDATE pair: this one scans
+-- the table under ACCESS EXCLUSIVE, which is exempt only because `tasks` has no
+-- traffic yet when this runs. Every later CHECK on it follows 00004.
 ALTER TABLE tasks ADD CONSTRAINT tasks_status_check CHECK (status IN (
     'pending', 'running', 'retry_scheduled',
     'succeeded', 'failed', 'canceled', 'dead_lettered'
