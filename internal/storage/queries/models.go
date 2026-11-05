@@ -10,53 +10,6 @@ import (
 	"github.com/google/uuid"
 )
 
-type DlqTask struct {
-	ID             uuid.UUID `json:"id"`
-	TaskID         uuid.UUID `json:"task_id"`
-	Handler        string    `json:"handler"`
-	Payload        []byte    `json:"payload"`
-	ErrorClass     string    `json:"error_class"`
-	Reason         string    `json:"reason"`
-	Attempts       int32     `json:"attempts"`
-	DeadLetteredAt time.Time `json:"dead_lettered_at"`
-}
-
-type IdempotencyKey struct {
-	TenantID       uuid.UUID `json:"tenant_id"`
-	Handler        string    `json:"handler"`
-	IdempotencyKey string    `json:"idempotency_key"`
-	TaskID         uuid.UUID `json:"task_id"`
-	PayloadHash    []byte    `json:"payload_hash"`
-	CreatedAt      time.Time `json:"created_at"`
-	ExpiresAt      time.Time `json:"expires_at"`
-}
-
-type OutboxEvent struct {
-	EventID     uuid.UUID `json:"event_id"`
-	AggregateID uuid.UUID `json:"aggregate_id"`
-	Type        string    `json:"type"`
-	EnvelopeVer int16     `json:"envelope_ver"`
-	TraceID     *string   `json:"trace_id"`
-	Payload     []byte    `json:"payload"`
-	Sent        bool      `json:"sent"`
-	CreatedAt   time.Time `json:"created_at"`
-}
-
-type Schedule struct {
-	ID            uuid.UUID  `json:"id"`
-	TenantID      uuid.UUID  `json:"tenant_id"`
-	Handler       string     `json:"handler"`
-	Cron          string     `json:"cron"`
-	Timezone      string     `json:"timezone"`
-	Payload       []byte     `json:"payload"`
-	CatchupPolicy string     `json:"catchup_policy"`
-	OverlapPolicy string     `json:"overlap_policy"`
-	LastFiredAt   *time.Time `json:"last_fired_at"`
-	NextFireAt    time.Time  `json:"next_fire_at"`
-	ShardID       int32      `json:"shard_id"`
-	Enabled       bool       `json:"enabled"`
-}
-
 type Task struct {
 	ID              uuid.UUID  `json:"id"`
 	IdempotencyKey  *string    `json:"idempotency_key"`
@@ -95,84 +48,6 @@ type TaskAttempt struct {
 }
 
 type TasksArchive struct {
-	ID              uuid.UUID  `json:"id"`
-	IdempotencyKey  *string    `json:"idempotency_key"`
-	Payload         []byte     `json:"payload"`
-	Status          string     `json:"status"`
-	CreatedAt       time.Time  `json:"created_at"`
-	Handler         string     `json:"handler"`
-	TenantID        uuid.UUID  `json:"tenant_id"`
-	Priority        int16      `json:"priority"`
-	EarliestAt      time.Time  `json:"earliest_at"`
-	Attempt         int32      `json:"attempt"`
-	MaxAttempts     int32      `json:"max_attempts"`
-	ShardID         int32      `json:"shard_id"`
-	CancelRequested bool       `json:"cancel_requested"`
-	UpdatedAt       time.Time  `json:"updated_at"`
-	StartedAt       *time.Time `json:"started_at"`
-	WorkerID        *string    `json:"worker_id"`
-	LeaseUntil      *time.Time `json:"lease_until"`
-	LeaseEpoch      *int64     `json:"lease_epoch"`
-	TraceID         *string    `json:"trace_id"`
-	FinishedAt      time.Time  `json:"finished_at"`
-	Result          []byte     `json:"result"`
-	ResultUrl       *string    `json:"result_url"`
-	ResultSizeBytes *int64     `json:"result_size_bytes"`
-}
-
-type TasksArchive202608 struct {
-	ID              uuid.UUID  `json:"id"`
-	IdempotencyKey  *string    `json:"idempotency_key"`
-	Payload         []byte     `json:"payload"`
-	Status          string     `json:"status"`
-	CreatedAt       time.Time  `json:"created_at"`
-	Handler         string     `json:"handler"`
-	TenantID        uuid.UUID  `json:"tenant_id"`
-	Priority        int16      `json:"priority"`
-	EarliestAt      time.Time  `json:"earliest_at"`
-	Attempt         int32      `json:"attempt"`
-	MaxAttempts     int32      `json:"max_attempts"`
-	ShardID         int32      `json:"shard_id"`
-	CancelRequested bool       `json:"cancel_requested"`
-	UpdatedAt       time.Time  `json:"updated_at"`
-	StartedAt       *time.Time `json:"started_at"`
-	WorkerID        *string    `json:"worker_id"`
-	LeaseUntil      *time.Time `json:"lease_until"`
-	LeaseEpoch      *int64     `json:"lease_epoch"`
-	TraceID         *string    `json:"trace_id"`
-	FinishedAt      time.Time  `json:"finished_at"`
-	Result          []byte     `json:"result"`
-	ResultUrl       *string    `json:"result_url"`
-	ResultSizeBytes *int64     `json:"result_size_bytes"`
-}
-
-type TasksArchive202609 struct {
-	ID              uuid.UUID  `json:"id"`
-	IdempotencyKey  *string    `json:"idempotency_key"`
-	Payload         []byte     `json:"payload"`
-	Status          string     `json:"status"`
-	CreatedAt       time.Time  `json:"created_at"`
-	Handler         string     `json:"handler"`
-	TenantID        uuid.UUID  `json:"tenant_id"`
-	Priority        int16      `json:"priority"`
-	EarliestAt      time.Time  `json:"earliest_at"`
-	Attempt         int32      `json:"attempt"`
-	MaxAttempts     int32      `json:"max_attempts"`
-	ShardID         int32      `json:"shard_id"`
-	CancelRequested bool       `json:"cancel_requested"`
-	UpdatedAt       time.Time  `json:"updated_at"`
-	StartedAt       *time.Time `json:"started_at"`
-	WorkerID        *string    `json:"worker_id"`
-	LeaseUntil      *time.Time `json:"lease_until"`
-	LeaseEpoch      *int64     `json:"lease_epoch"`
-	TraceID         *string    `json:"trace_id"`
-	FinishedAt      time.Time  `json:"finished_at"`
-	Result          []byte     `json:"result"`
-	ResultUrl       *string    `json:"result_url"`
-	ResultSizeBytes *int64     `json:"result_size_bytes"`
-}
-
-type TasksArchiveDefault struct {
 	ID              uuid.UUID  `json:"id"`
 	IdempotencyKey  *string    `json:"idempotency_key"`
 	Payload         []byte     `json:"payload"`

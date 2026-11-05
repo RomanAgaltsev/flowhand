@@ -12,6 +12,9 @@ sql:
         emit_prepared_queries: false
         emit_interface: true
         emit_pointers_for_null_types: true
+        # A partition is a table to sqlc, so without this every month of
+        # tasks_archive adds a struct nothing can use.
+        omit_unused_structs: true
         overrides:
           - db_type: "uuid"
             go_type:
