@@ -3,6 +3,7 @@ package cache
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -148,11 +149,14 @@ func TestLRUExpiredEntriesDoNotOccupySlots(t *testing.T) {
 	})
 }
 
-// lruOp is a single generated cache operation: Get when get is true, Put otherwise.
+// lruOp is a single generated cache operation: Get when Get is true, Put otherwise.
+//
+// The fields are exported because gen.Struct cannot set any others: it skips them
+// without a word, and every generated operation is then the zero value.
 type lruOp struct {
-	get bool
-	key int
-	val int
+	Get bool
+	Key int
+	Val int
 }
 
 // lruModel is a naive reference implementation: order holds keys most-recent
@@ -203,9 +207,9 @@ func TestLRUMatchesReferenceModel(t *testing.T) {
 	properties := gopter.NewProperties(gopter.DefaultTestParameters())
 
 	opGen := gen.Struct(reflect.TypeFor[lruOp](), map[string]gopter.Gen{
-		"get": gen.Bool(),
-		"key": gen.IntRange(0, 15),
-		"val": gen.IntRange(0, 1000),
+		"Get": gen.Bool(),
+		"Key": gen.IntRange(0, 15),
+		"Val": gen.IntRange(0, 1000),
 	})
 
 	properties.Property("Put/Get sequences match a reference model", prop.ForAll(
@@ -226,9 +230,9 @@ func replayOps(ops []lruOp, capacity int) (bool, error) {
 	model := &lruModel{capacity: capacity, vals: make(map[int]int, capacity)}
 
 	for i, op := range ops {
-		key := op.key % universe
+		key := op.Key % universe
 
-		if op.get {
+		if op.Get {
 			gotVal, gotOK := lru.Get(key)
 			wantVal, wantOK := model.get(key)
 			if gotOK != wantOK || gotVal != wantVal {
@@ -236,8 +240,8 @@ func replayOps(ops []lruOp, capacity int) (bool, error) {
 					i, key, gotVal, gotOK, wantVal, wantOK)
 			}
 		} else {
-			lru.Put(key, op.val, 0)
-			model.put(key, op.val)
+			lru.Put(key, op.Val, 0)
+			model.put(key, op.Val)
 		}
 
 		if lru.Len() != len(model.order) {
@@ -257,4 +261,176 @@ func replayOps(ops []lruOp, capacity int) (bool, error) {
 	}
 
 	return true, nil
+}
+
+// ttlModel is the reference for the TTL half, deliberately naive: a slice in
+// recency order, scanned in full. TestLRUMatchesReferenceModel only ever Puts with
+// no TTL, so it cannot reach the expiry heap at all.
+type ttlModel struct {
+	capacity int
+	order    []int // most recent first
+	vals     map[int]int
+	expires  map[int]time.Time
+	now      time.Time
+}
+
+func (m *ttlModel) expired(key int) bool {
+	at, ok := m.expires[key]
+	return ok && m.now.After(at)
+}
+
+func (m *ttlModel) remove(key int) {
+	delete(m.vals, key)
+	delete(m.expires, key)
+	m.order = slices.DeleteFunc(m.order, func(k int) bool { return k == key })
+}
+
+func (m *ttlModel) reclaim() {
+	for _, key := range slices.Clone(m.order) {
+		if m.expired(key) {
+			m.remove(key)
+		}
+	}
+}
+
+func (m *ttlModel) promote(key int) {
+	m.order = slices.DeleteFunc(m.order, func(k int) bool { return k == key })
+	m.order = slices.Insert(m.order, 0, key)
+}
+
+func (m *ttlModel) put(key, val int, ttl time.Duration) {
+	_, existed := m.vals[key]
+	m.vals[key] = val
+	delete(m.expires, key)
+	if ttl > 0 {
+		m.expires[key] = m.now.Add(ttl)
+	}
+	m.promote(key)
+
+	if existed || len(m.order) <= m.capacity {
+		return
+	}
+	m.reclaim()
+	if len(m.order) > m.capacity {
+		m.remove(m.order[len(m.order)-1])
+	}
+}
+
+func (m *ttlModel) get(key int) (int, bool) {
+	val, ok := m.vals[key]
+	if !ok {
+		return 0, false
+	}
+	if m.expired(key) {
+		m.remove(key)
+		return 0, false
+	}
+	m.promote(key)
+	return val, true
+}
+
+// heapConsistent checks what the model cannot see: every entry with a TTL is in
+// the heap at the index it believes it has, and no other entry is.
+func heapConsistent(c *LRU[int, int]) error {
+	withTTL := 0
+	for key, element := range c.items {
+		item := element.Value.(*entry[int, int])
+		if item.expiresAt.IsZero() {
+			if item.heapIndex != noExpiry {
+				return fmt.Errorf("key %d has no TTL but heapIndex %d", key, item.heapIndex)
+			}
+			continue
+		}
+		withTTL++
+		if item.heapIndex < 0 || item.heapIndex >= len(c.expiry) || c.expiry[item.heapIndex] != item {
+			return fmt.Errorf("key %d: heapIndex %d does not point back at it", key, item.heapIndex)
+		}
+	}
+	if withTTL != len(c.expiry) {
+		return fmt.Errorf("%d entries have a TTL, the heap holds %d", withTTL, len(c.expiry))
+	}
+	return nil
+}
+
+// replayTTLOps decodes each int into one operation, so that a sequence mixes
+// every way an entry can gain, change, lose or outlive its TTL.
+func replayTTLOps(ops []int, capacity int) (bool, error) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	now := start
+	universe := capacity + 3
+
+	lru := NewLRU[int, int](capacity, func() time.Time { return now })
+	model := &ttlModel{
+		capacity: capacity, now: start,
+		vals: make(map[int]int), expires: make(map[int]time.Time),
+	}
+
+	for i, op := range ops {
+		key := (op / 8) % universe
+		ttl := time.Duration(op/64%4) * time.Second // 0 means no TTL
+
+		switch op % 8 {
+		case 0, 1, 2:
+			lru.Put(key, op, ttl)
+			model.put(key, op, ttl)
+		case 3, 4:
+			gotVal, gotOK := lru.Get(key)
+			wantVal, wantOK := model.get(key)
+			if gotOK != wantOK || gotVal != wantVal {
+				return false, fmt.Errorf("op %d: Get(%d) = (%d, %v), model = (%d, %v)",
+					i, key, gotVal, gotOK, wantVal, wantOK)
+			}
+		case 5:
+			_, want := model.vals[key]
+			model.remove(key)
+			if got := lru.Delete(key); got != want {
+				return false, fmt.Errorf("op %d: Delete(%d) = %v, model = %v", i, key, got, want)
+			}
+		case 6:
+			now = now.Add(time.Second + time.Nanosecond)
+			model.now = now
+		default:
+			model.reclaim()
+			if got, want := lru.Len(), len(model.order); got != want {
+				return false, fmt.Errorf("op %d: Len() = %d, model = %d", i, got, want)
+			}
+		}
+
+		if err := heapConsistent(lru); err != nil {
+			return false, fmt.Errorf("op %d: %w", i, err)
+		}
+	}
+	return true, nil
+}
+
+func TestLRUExpiryMatchesReferenceModel(t *testing.T) {
+	params := gopter.DefaultTestParameters()
+	params.MinSuccessfulTests = 2000
+	properties := gopter.NewProperties(params)
+
+	properties.Property("sequences with TTLs match a reference model", prop.ForAll(
+		replayTTLOps,
+		gen.SliceOf(gen.IntRange(0, 1<<16)),
+		gen.IntRange(1, 8),
+	))
+
+	properties.TestingRun(t)
+}
+
+// BenchmarkLRU_PutAtCapacity keeps the regression visible: a full cache is the
+// steady state, and an insert into one must not cost more as capacity grows.
+func BenchmarkLRU_PutAtCapacity(b *testing.B) {
+	for _, capacity := range []int{100, 1000, 10000} {
+		b.Run(fmt.Sprintf("cap=%d", capacity), func(b *testing.B) {
+			c := NewLRU[int, int](capacity, nil)
+			for i := range capacity {
+				c.Put(i, i, 5*time.Minute)
+			}
+			next := capacity
+			for b.Loop() {
+				c.Put(next, next, 5*time.Minute)
+				next++
+			}
+		})
+	}
 }
