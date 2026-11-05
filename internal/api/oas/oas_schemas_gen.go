@@ -28,9 +28,12 @@ func (*CreateTaskOK) createTaskRes() {}
 
 // Ref: #/components/schemas/CreateTaskRequest
 type CreateTaskRequest struct {
-	Handler string                      `json:"handler"`
+	Handler string `json:"handler"`
+	// Opaque to the server, with four limits: object names must be unique at every level below the top, no
+	// string or name may hold U+0000, and every number must be within IEEE 754 double range with at most
+	// 1024 characters and a three-digit exponent. A payload outside them is a 400.
 	Payload OptCreateTaskRequestPayload `json:"payload"`
-	// ASCII only, so the key is the same bytes in every client.
+	// Printable ASCII only (0x20–0x7E), so the key is the same bytes in every client and every log.
 	IdempotencyKey OptString `json:"idempotency_key"`
 }
 
@@ -64,6 +67,9 @@ func (s *CreateTaskRequest) SetIdempotencyKey(val OptString) {
 	s.IdempotencyKey = val
 }
 
+// Opaque to the server, with four limits: object names must be unique at every level below the top, no
+// string or name may hold U+0000, and every number must be within IEEE 754 double range with at most
+// 1024 characters and a three-digit exponent. A payload outside them is a 400.
 type CreateTaskRequestPayload map[string]jx.Raw
 
 func (s *CreateTaskRequestPayload) init() CreateTaskRequestPayload {
@@ -382,8 +388,9 @@ type Task struct {
 	ID uuid.UUID `json:"id"`
 	// Lifecycle state. `retry_scheduled` is a transient scheduler state surfaced for observability;
 	// `dead_lettered` is terminal.
-	Status    TaskStatus `json:"status"`
-	CreatedAt time.Time  `json:"created_at"`
+	Status TaskStatus `json:"status"`
+	// Second resolution on the wire. Do not order tasks by it.
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // GetID returns the value of ID.

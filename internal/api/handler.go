@@ -17,9 +17,27 @@ import (
 
 var tracer = otel.Tracer("github.com/RomanAgaltsev/flowhand/internal/api")
 
+// payloadMessage is the one thing a client is told about a refused payload.
+const payloadMessage = "payload must be one JSON value with unique object names, no NUL characters, " +
+	"and numbers within double range"
+
+// clientErrors maps the domain's input sentinels to the wire. A Submit error
+// that matches none of them is ours: 500, logged. The messages are fixed rather
+// than err.Error(), because the wrapped chain carries internal context.
+var clientErrors = []struct {
+	sentinel error
+	message  string
+}{
+	{domaintasks.ErrUnknownHandler, "unknown handler"},
+	{domaintasks.ErrEmptyHandler, "handler must not be empty"},
+	{domaintasks.ErrInvalidHandlerName, "handler must be valid UTF-8 with no NUL character"},
+	{domaintasks.ErrInvalidIdempotencyKey, "invalid idempotency key"},
+	{domaintasks.ErrInvalidPayload, payloadMessage},
+}
+
 // Commander is the write side this handler consumes. Declared here, not in the
 // service package, so the handler owns the shape it depends on and tests can
-// fake it. Satisfies by *task.Commander.
+// fake it. Satisfied by *task.Commander.
 type Commander interface {
 	Submit(ctx context.Context, cmd task.SubmitCommand) (domaintasks.Task, bool, error)
 }
@@ -42,7 +60,8 @@ func NewHandler(cmd Commander, q Querier, log *slog.Logger) *Handler {
 }
 
 // CreateTask submits a new task. Idempotency replay is handled by the
-// Commander, so a repeated key yields the original task, not a 409.
+// Commander: a repeated key with the same payload is a 200 with the original
+// task, and with a different payload a 409.
 func (h *Handler) CreateTask(ctx context.Context, req *oas.CreateTaskRequest) (oas.CreateTaskRes, error) {
 	ctx, span := tracer.Start(ctx, "createTask")
 	defer span.End()
@@ -72,6 +91,11 @@ func (h *Handler) CreateTask(ctx context.Context, req *oas.CreateTaskRequest) (o
 		}, nil
 	}
 	if err != nil {
+		for _, ce := range clientErrors {
+			if errors.Is(err, ce.sentinel) {
+				return &oas.CreateTaskBadRequest{Code: oas.ErrorCodeInvalidRequestBody, Message: ce.message}, nil
+			}
+		}
 		h.log.ErrorContext(ctx, "create task failed", "err", err)
 		return nil, fmt.Errorf("submit task: %w", err)
 	}

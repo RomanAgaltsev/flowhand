@@ -1,9 +1,10 @@
 package tasks
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -14,7 +15,8 @@ import (
 // tasks_priority_check (migrations/00004_shard_priority_checks.sql).
 type Priority uint8
 
-// MaxPriority is the highest priority a task may carry. schema.md: higher = sooner.
+// MaxPriority is the highest priority a task may carry. Higher runs sooner: the
+// dequeue index orders priority DESC.
 const MaxPriority Priority = 9
 
 // NewPriority creates new Priority.
@@ -26,7 +28,7 @@ func NewPriority(p uint8) (Priority, error) {
 }
 
 // IsHigherThan reports whether p runs sooner than other. Higher values run
-// sooner (schema.md), which is exactly the fact this method exists to hide.
+// sooner, which is exactly the fact this method exists to hide.
 // Strict: a tie is not "higher".
 func (p Priority) IsHigherThan(other Priority) bool { return p > other }
 
@@ -34,21 +36,25 @@ func (p Priority) IsHigherThan(other Priority) bool { return p > other }
 // unmistakably invalid and there is no conversion that bypasses NewIdempotencyKey.
 type IdempotencyKey struct{ s string }
 
-// MaxIdempotencyKeyBytes bounds the key at the width of the idempotency_key
-// column. Keys are ASCII-only, so bytes and runes coincide.
-const MaxIdempotencyKeyBytes = 255
+// MaxIdempotencyKeyBytes matches the wire's maxLength. The TEXT column is
+// unbounded, so this constant is the only bound for callers that are not the HTTP
+// API. Keys are ASCII-only, so bytes and runes coincide.
+const MaxIdempotencyKeyBytes = 128
 
 // NewIdempotencyKey creates new IdempotencyKey.
 func NewIdempotencyKey(s string) (IdempotencyKey, error) {
 	if s == "" {
 		return IdempotencyKey{}, ErrIdempotencyKeyEmpty
 	}
-	// ASCII BEFORE length: "255" is ambiguous between bytes and runes for any
-	// non-ASCII string, and this check is what settles it. Reversed, a 200-rune
-	// 600-byte key would be reported as too long rather than as non-ASCII.
+	// ASCII BEFORE length: the bound is ambiguous between bytes and runes for any
+	// non-ASCII string, and this check is what settles it. Reversed, a 100-rune
+	// 300-byte key would be reported as too long rather than as non-ASCII.
 	for i := 0; i < len(s); i++ {
-		if s[i] >= utf8.RuneSelf {
+		switch c := s[i]; {
+		case c >= utf8.RuneSelf:
 			return IdempotencyKey{}, fmt.Errorf("%w at offset %d", ErrIdempotencyKeyNotASCII, i)
+		case c < 0x20 || c == 0x7F:
+			return IdempotencyKey{}, fmt.Errorf("%w at offset %d", ErrIdempotencyKeyNotPrintable, i)
 		}
 	}
 	if len(s) > MaxIdempotencyKeyBytes {
@@ -62,9 +68,10 @@ func (k IdempotencyKey) String() string {
 	return k.s
 }
 
-// Hash is the Redis fast-path lookup key and the payload_hash comparison basis.
-func (k IdempotencyKey) Hash() [32]byte {
-	return sha256.Sum256([]byte(k.s))
+// LogValue logs the key as its bare string. Without it the JSON handler marshals
+// a struct with no exported fields, and the key logs as {}.
+func (k IdempotencyKey) LogValue() slog.Value {
+	return slog.StringValue(k.s)
 }
 
 // Handler is a validated handler name.
@@ -77,6 +84,9 @@ type Handler struct {
 func NewHandler(name string, cat HandlerCatalog) (Handler, error) {
 	if name == "" {
 		return Handler{}, ErrEmptyHandler
+	}
+	if !utf8.ValidString(name) || strings.IndexByte(name, 0) >= 0 {
+		return Handler{}, fmt.Errorf("%w: %q", ErrInvalidHandlerName, name)
 	}
 	if cat == nil {
 		return Handler{}, fmt.Errorf("%w: nil catalog for %q", ErrNilHandlerCatalog, name)
@@ -117,7 +127,7 @@ type HandlerCatalog interface {
 }
 
 // LeaseEpoch is the shard-ownership fencing token stamped onto a row at
-// dispatch (schema.md, "The lease-epoch fencing mechanism"; ADR 0004).
+// dispatch.
 type LeaseEpoch uint64
 
 // IsStaleVs reports whether e is older than other — the fencing rejection
@@ -126,14 +136,14 @@ type LeaseEpoch uint64
 // epoch-now fence would zero-row every in-flight completion after a scale event.
 func (e LeaseEpoch) IsStaleVs(other LeaseEpoch) bool { return e < other }
 
-// ShardID is a consistent-hash partition of the task space (schema.md:
-// shard_id INT, domain range 0..65535). No constructor: every uint16 is a
+// ShardID is a consistent-hash partition of the task space (column shard_id INT,
+// domain range 0..65535). No constructor: every uint16 is a
 // valid shard, and the mapper bounds-checks the wider column on read.
 type ShardID uint16
 
 // Bucket folds a shard id into one of n low-cardinality buckets for use as a
-// metric label — never label a series with the raw shard id
-// (design/distributed/cardinality.md: 8 buckets, shard_id mod 8).
+// metric label — never label a series with the raw shard id, whose cardinality is
+// unbounded for a dashboard. The convention is 8 buckets: shard_id mod 8.
 //
 // n must be positive; n <= 0 returns 0 rather than panicking, because this
 // runs on an instrumentation path where a misconfigured bucket count must not

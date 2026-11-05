@@ -83,10 +83,15 @@ components:
         payload:
           type: object
           additionalProperties: true
+          description: >
+            Opaque to the server, with four limits: object names must be unique at every
+            level below the top, no string or name may hold U+0000, and every number must
+            be within IEEE 754 double range with at most 1024 characters and a three-digit
+            exponent. A payload outside them is a 400.
         idempotency_key:
           type: string
-          description: ASCII only, so the key is the same bytes in every client.
-          pattern: '^[\x00-\x7F]+$'
+          description: Printable ASCII only (0x20–0x7E), so the key is the same bytes in every client and every log.
+          pattern: '^[\x20-\x7E]+$'
           minLength: 1
           maxLength: 128
     Task:
@@ -100,7 +105,10 @@ components:
             Lifecycle state. `retry_scheduled` is a transient scheduler state surfaced for
             observability; `dead_lettered` is terminal.
           enum: [pending, running, retry_scheduled, succeeded, failed, canceled, dead_lettered]
-        created_at: { type: string, format: date-time }
+        created_at:
+          type: string
+          format: date-time
+          description: Second resolution on the wire. Do not order tasks by it.
     Error:
       type: object
       required: [code, message]

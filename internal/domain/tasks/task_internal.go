@@ -1,6 +1,7 @@
 package tasks
 
 import (
+	"bytes"
 	"encoding/json"
 	"slices"
 	"time"
@@ -13,7 +14,7 @@ import (
 // events, and replaying history is not the same thing as it happening again.
 // pendingEvents is left nil.
 //
-// The attempts slice is cloned: the caller keeps no writable handle into the
+// The attempts and the payload are cloned: the caller keeps no writable handle into the
 // aggregate it just built.
 func FromPersistence(
 	id uuid.UUID,
@@ -32,7 +33,7 @@ func FromPersistence(
 		status:      status,
 		handler:     handler,
 		priority:    priority,
-		payload:     payload,
+		payload:     bytes.Clone(payload),
 		attempts:    slices.Clone(attempts),
 		leaseEpoch:  leaseEpoch,
 		earliestAt:  earliestAt,
@@ -51,6 +52,4 @@ func FromPersistence(
 // HandlerCatalog into the repository to re-check data we wrote ourselves.
 // Validity is as-of-construction either way (see NewHandler), so the worker
 // must still handle "no such handler" at dispatch time.
-//
-// Not called until D2 widens Task to carry a Handler instead of a bare string.
 func HandlerFromPersistence(name string) Handler { return Handler{name: name} }

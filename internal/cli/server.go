@@ -4,9 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -32,8 +29,8 @@ var serverCmd = &cobra.Command{
 			return fmt.Errorf("load config: %w", err)
 		}
 
-		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
-		defer stop()
+		// Already carries the signal handler main installed.
+		ctx := cmd.Context()
 
 		shutdown, reg, err := obs.Init(ctx, cfg)
 		if err != nil {
@@ -58,7 +55,7 @@ var serverCmd = &cobra.Command{
 		tasksRepo := repotasks.New(txm)
 		outboxRepo := outbox.New(txm)
 
-		rdb := redis.NewClient(&redis.Options{Addr: cfg.Redis.Addr})
+		rdb := redis.NewClient(redisOptions(cfg.Redis))
 		defer func() {
 			if err := rdb.Close(); err != nil {
 				slog.Error("redis close failed", "err", err)
@@ -72,7 +69,7 @@ var serverCmd = &cobra.Command{
 		}
 
 		h := api.NewHandler(
-			task.NewCommander(tasksRepo, outboxRepo, txm, idempStore, acceptAnyHandler{}),
+			task.NewCommander(tasksRepo, outboxRepo, txm, idempStore, acceptAnyHandler{}, slog.Default()),
 			task.NewQuerier(tasksRepo, taskCache, cfg.Cache.TTL),
 			slog.Default(),
 		)
@@ -81,14 +78,28 @@ var serverCmd = &cobra.Command{
 	},
 }
 
+// redisOptions builds the idempotency cache's client. ContextTimeoutEnabled is
+// load-bearing: without it go-redis ignores the context's deadline, so the submit
+// path's per-call budget does nothing and a Redis that stops answering holds
+// every keyed submit for the full read timeout.
+func redisOptions(cfg config.Redis) *redis.Options {
+	return &redis.Options{
+		Addr:                  cfg.Addr,
+		DialTimeout:           cfg.DialTimeout,
+		ReadTimeout:           cfg.ReadTimeout,
+		WriteTimeout:          cfg.WriteTimeout,
+		PoolTimeout:           cfg.PoolTimeout,
+		ContextTimeoutEnabled: true,
+	}
+}
+
 // acceptAnyHandler is a placeholder tasks.HandlerCatalog: it accepts every
-// non-empty name, which is exactly the validation the control plane did before
-// D2 gave Task a real Handler value object.
+// non-empty name, and no more validation than that.
 //
 // It is deliberately permissive rather than empty. An empty catalog would
 // reject every submission, and shipping a catalog that silently rejects real
 // traffic is worse than shipping one that admits it has no opinion yet. The
-// worker runtime (CE1) owns the real registry; this type goes away with it.
+// worker runtime owns the real registry; this type goes away with it.
 //
 // NewHandler already rejects the empty name before consulting a catalog, so
 // Has never sees one.

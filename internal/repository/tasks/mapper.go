@@ -150,7 +150,7 @@ func leaseEpochFromRow(e *int64) (domaintasks.LeaseEpoch, error) {
 	return domaintasks.LeaseEpoch(*e), nil //nolint:gosec // G115: bounds-checked above.
 }
 
-// shardIDFromRow narrows the INT column to the domain's uint16 (D8: the column
+// shardIDFromRow narrows the INT column to the domain's uint16 (the column
 // is deliberately wider than the domain range, so the read path bounds-checks).
 func shardIDFromRow(v int32) (domaintasks.ShardID, error) {
 	if v < 0 || v > math.MaxUint16 {
@@ -162,25 +162,32 @@ func shardIDFromRow(v int32) (domaintasks.ShardID, error) {
 
 var defaultTenantID = uuid.Nil
 
-// toRow projects the aggregate onto the tasks row. Every value now comes from
-// the aggregate: before D2 the priority, attempt budget and earliest_at were
-// hardcoded here because Task had nowhere to keep them.
-func toRow(t domaintasks.Task, idempotencyKey *string) queries.CreateTaskParams {
+// toRow projects the aggregate onto the tasks row. Every value comes from the
+// aggregate, so the row and the response to the submit that wrote it agree. The
+// claim is nil for a keyless submit, and traceID is nil outside a trace.
+func toRow(t domaintasks.Task, claim *domaintasks.IdempotencyClaim, traceID *string) queries.CreateTaskParams {
+	var key *string
+	if claim != nil {
+		key = new(claim.Key.String())
+	}
 	return queries.CreateTaskParams{
 		ID:             t.ID(),
-		IdempotencyKey: idempotencyKey,
+		IdempotencyKey: key,
 		Payload:        t.Payload(),
+		Status:         string(t.Status()),
 		Handler:        t.Handler().Name(),
 		TenantID:       defaultTenantID,
 		Priority:       int16(t.Priority()),
 		EarliestAt:     t.EarliestAt(),
 		Attempt:        int32(t.AttemptCount()),
 		MaxAttempts:    int32(t.MaxAttempts()),
-		// Shard assignment is the scheduler's job (S0/CE3); the aggregate
-		// carries no shard, so a fresh row lands on shard 0 until dispatch.
+		// Shard assignment is the scheduler's job; the aggregate carries no
+		// shard, so a fresh row lands on shard 0 until dispatch.
 		ShardID:         0,
 		CancelRequested: false,
+		CreatedAt:       t.CreatedAt(),
 		UpdatedAt:       t.CreatedAt(),
+		TraceID:         traceID,
 	}
 }
 
@@ -225,4 +232,17 @@ func ref(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// fingerprintFromRow narrows the BYTEA column to the domain's 16-byte array.
+// A bare conversion would panic below 16 bytes and silently keep a prefix
+// above it; a row written before the fingerprint was canonical holds 32.
+func fingerprintFromRow(b []byte) (domaintasks.PayloadFingerprint, error) {
+	var fp domaintasks.PayloadFingerprint
+	if len(b) != len(fp) {
+		return fp, fmt.Errorf("%w: %d bytes, want %d",
+			domaintasks.ErrInvalidFingerprint, len(b), len(fp))
+	}
+	copy(fp[:], b)
+	return fp, nil
 }

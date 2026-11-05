@@ -36,7 +36,7 @@ allow:
   #
   # It is also not platform-stable: the same v1.17.0 binary reports these on
   # Linux and stays silent on Windows, so a green local run proved nothing.
-  # The import-direction rule — which is what ADR 0003 actually asks for — is
+  # The import-direction rule — which is what the layering actually asks for — is
   # the "Base: component imports" linter, and that is always on.
   deepScan: false
 
@@ -76,13 +76,18 @@ components:
   obs: { in: obs }
 
   # Shared generic containers. service-task imports it for the read-side task
-    # cache; it imports nothing internal itself.
+  # cache; it imports nothing internal itself.
   generic-cache: { in: generic/cache }
 
-  # Test-only leaf: the shared goroutine-leak check (plans/phase-1/01-p0,
-  # Step 2). Nothing in production imports it — only _test.go files do, and
-  # those are excluded above — so it is a leaf by omission, like generic-cache.
+  # Test-only leaf: the shared goroutine-leak check. Nothing in production imports
+  # it — only _test.go files do, and those are excluded below — so it is a leaf by
+  # omission, like generic-cache.
   testutil: { in: testutil }
+
+  # Test-only fixture: a real Postgres and Redis for the integration suites. A
+  # leaf by omission too: it has to reach across layers, so its files are excluded
+  # below, for the same reason the _test.go files are.
+  pgtest: { in: testutil/pgtest }
 
 deps:
   # The composition root is the one component allowed to see every layer at
@@ -148,3 +153,4 @@ deps:
 
 excludeFiles:
   - '^.*_test\.go$' # tests may cross layers; production code may not
+  - '^.*testutil.pgtest.pgtest\.go$' # a test fixture, and it imports the root migrations package

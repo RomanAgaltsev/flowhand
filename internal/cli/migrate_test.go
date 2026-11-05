@@ -3,60 +3,27 @@
 package cli
 
 import (
-	"context"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/modules/postgres"
-	"github.com/testcontainers/testcontainers-go/wait"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/RomanAgaltsev/flowhand/internal/config"
 	"github.com/RomanAgaltsev/flowhand/internal/storage"
+	"github.com/RomanAgaltsev/flowhand/internal/testutil/pgtest"
 	"github.com/RomanAgaltsev/flowhand/migrations"
 )
 
-// startTestPostgres brings up a throwaway Postgres with NO migrations applied —
-// applying them is what the migrators under test are for — and returns its DSN.
-//
-// A DSN rather than a pool, because this package may not import pgx
-// (.golangci.yml, depguard `tx-isolation`); everything that needs a connection
-// here goes through storage.
-func startTestPostgres(t *testing.T) string {
-	t.Helper()
-	ctx := context.Background()
-
-	pg, err := postgres.Run(
-		ctx, "postgres:18-alpine",
-		postgres.WithDatabase("flowhand"),
-		postgres.WithUsername("flowhand"),
-		postgres.WithPassword("flowhand"),
-		testcontainers.WithWaitStrategy(
-			wait.ForLog("database system is ready to accept connections").
-				WithOccurrence(2).WithStartupTimeout(60*time.Second),
-		),
-	)
-	require.NoError(t, err)
-	testcontainers.CleanupContainer(t, pg)
-
-	dsn, err := pg.ConnectionString(ctx, "sslmode=disable")
-	require.NoError(t, err)
-
-	return dsn
-}
-
-// TestConcurrentMigrators proves the session-scoped advisory lock serialises two
+// TestConcurrentMigrators proves the session-scoped advisory lock serializes two
 // replicas booting at once. Remove goose.WithSessionLocker in
 // storage.NewGooseProvider and this must FAIL with a duplicate-relation error
 // from the loser — a gate you have never watched fail is a gate you have not
 // tested.
 func TestConcurrentMigrators(t *testing.T) {
-	dsn := startTestPostgres(t)
-	ctx := context.Background()
+	dsn := pgtest.EmptyDSN(t)
+	ctx := t.Context()
 
 	// A pool each, not one shared: two replicas are two processes, and the lock
 	// is per backend connection.
@@ -72,7 +39,7 @@ func TestConcurrentMigrators(t *testing.T) {
 	}
 
 	// Bring the database to version 2 BEFORE racing — the state the lock actually
-	// has to protect, and the one the plan describes: two replicas boot, both read
+	// has to protect: two replicas boot, both read
 	// goose_db_version at 2, both decide migration 3 is pending, both run it.
 	//
 	// Racing from an empty database instead proves nothing, and does so silently.

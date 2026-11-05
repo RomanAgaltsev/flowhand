@@ -12,6 +12,7 @@ import (
 
 	"github.com/RomanAgaltsev/flowhand/internal/api/oas"
 	domaintasks "github.com/RomanAgaltsev/flowhand/internal/domain/tasks"
+	"github.com/RomanAgaltsev/flowhand/internal/service/task"
 )
 
 // fakeCatalog stands in for the worker registry. Going through the real
@@ -95,4 +96,21 @@ func TestToOASTaskStatusIsAlwaysValid(t *testing.T) {
 			assert.NoError(t, dto.Validate())
 		})
 	}
+}
+
+// A row reads back in the connection's time zone and a fresh submit is in UTC, so
+// without this one instant reaches the wire spelled two ways, and a client comparing
+// a replay's created_at to the original sees them differ.
+func TestToOASTaskCreatedAtIsUTC(t *testing.T) {
+	east := time.FixedZone("UTC+3", 3*60*60)
+	at := time.Date(2026, 11, 5, 15, 0, 0, 0, east)
+
+	dto, err := toOASTask(submitted(t, uuid.Must(uuid.NewV7()), json.RawMessage(`{}`), at))
+	require.NoError(t, err)
+	assert.Equal(t, time.UTC, dto.CreatedAt.Location())
+
+	dto, err = toOASTaskView(task.TaskView{Status: "pending", CreatedAt: at})
+	require.NoError(t, err)
+	assert.Equal(t, time.UTC, dto.CreatedAt.Location())
+	assert.True(t, at.Equal(dto.CreatedAt), "the instant must not change")
 }

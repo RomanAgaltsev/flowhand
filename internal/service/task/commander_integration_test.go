@@ -6,105 +6,26 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
+	"slices"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool" //nolint:depguard // test fixture: the test owns the database, the Commander still reaches it only through ports
-	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/modules/postgres"
-	"github.com/testcontainers/testcontainers-go/wait"
 
-	"github.com/RomanAgaltsev/flowhand/internal/config"
 	domaintasks "github.com/RomanAgaltsev/flowhand/internal/domain/tasks"
 	"github.com/RomanAgaltsev/flowhand/internal/repository/outbox"
 	repotasks "github.com/RomanAgaltsev/flowhand/internal/repository/tasks"
 	"github.com/RomanAgaltsev/flowhand/internal/service/task"
-	"github.com/RomanAgaltsev/flowhand/internal/storage"
 	"github.com/RomanAgaltsev/flowhand/internal/storage/txmgr"
-	"github.com/RomanAgaltsev/flowhand/migrations"
+	"github.com/RomanAgaltsev/flowhand/internal/testutil/pgtest"
 )
-
-// startPostgresWithMigrations brings up a throwaway Postgres, applies every
-// goose migration against it, and returns a pool pointed at it.
-//
-// Migrations run through the goose *library* rather than the CLI so the test is
-// self-contained: what CI exercises is the same migration set `task migrate:up`
-// applies, with no external binary on PATH.
-func startPostgresWithMigrations(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	ctx := context.Background()
-
-	pg, err := postgres.Run(
-		ctx, "postgres:18-alpine",
-		postgres.WithDatabase("flowhand"),
-		postgres.WithUsername("flowhand"),
-		postgres.WithPassword("flowhand"),
-		testcontainers.WithWaitStrategy(
-			wait.ForLog("database system is ready to accept connections").
-				WithOccurrence(2).WithStartupTimeout(60*time.Second),
-		),
-	)
-	require.NoError(t, err)
-	testcontainers.CleanupContainer(t, pg)
-
-	dsn, err := pg.ConnectionString(ctx, "sslmode=disable")
-	require.NoError(t, err)
-
-	pool, err := storage.NewPool(ctx, config.DB{DSN: dsn, MaxConns: 4, MinConns: 1})
-	require.NoError(t, err)
-	t.Cleanup(pool.Close)
-
-	// Migrate through the very provider `flowhand migrate up` uses, rather than a
-	// second copy of its locker config that would drift from it. Its pool is
-	// transient — closed as soon as the migrations land — while the pool returned
-	// above is the one the repository under test runs on.
-	p, closeProvider, err := storage.NewGooseProvider(
-		ctx,
-		config.DB{DSN: dsn, MaxConns: 2, MinConns: 1},
-		migrations.FS,
-	)
-	require.NoError(t, err)
-	defer func() { require.NoError(t, closeProvider()) }()
-
-	_, err = p.Up(ctx)
-	require.NoError(t, err, "migrations must apply cleanly")
-
-	return pool
-}
-
-// startRedis brings up a throwaway Redis and returns a client pointed at it.
-//
-// The core testcontainers API rather than modules/redis: one exposed port and a
-// wait strategy is all this needs, and it costs no new go.mod requirement. The
-// image matches deploy/compose/docker-compose.yml.
-func startRedis(t *testing.T) *redis.Client {
-	t.Helper()
-	ctx := context.Background()
-
-	rc, err := testcontainers.Run(
-		ctx, "redis:8-alpine",
-		testcontainers.WithExposedPorts("6379/tcp"),
-		testcontainers.WithWaitStrategy(
-			wait.ForLog("Ready to accept connections").WithStartupTimeout(30*time.Second),
-		),
-	)
-	require.NoError(t, err)
-	testcontainers.CleanupContainer(t, rc)
-
-	addr, err := rc.PortEndpoint(ctx, "6379/tcp", "")
-	require.NoError(t, err)
-
-	rdb := redis.NewClient(&redis.Options{Addr: addr})
-	t.Cleanup(func() { require.NoError(t, rdb.Close()) })
-	require.NoError(t, rdb.Ping(ctx).Err(), "redis must answer before the test starts")
-
-	return rdb
-}
 
 // acceptAnyHandler stands in for the worker registry, the same role the
 // composition root's acceptAnyHandler plays until the worker runtime lands.
@@ -118,11 +39,11 @@ func (acceptAnyHandler) Has(string) bool { return true }
 // task, so the response alone cannot tell them apart.
 type countingTx struct {
 	inner task.TxRunner
-	n     int
+	n     atomic.Int64
 }
 
 func (c *countingTx) WithinTx(ctx context.Context, fn func(ctx context.Context) error) error {
-	c.n++
+	c.n.Add(1)
 	return c.inner.WithinTx(ctx, fn)
 }
 
@@ -130,7 +51,7 @@ func (c *countingTx) WithinTx(ctx context.Context, fn func(ctx context.Context) 
 func countRows(t *testing.T, pool *pgxpool.Pool, query string, args ...any) int {
 	t.Helper()
 	var n int
-	require.NoError(t, pool.QueryRow(context.Background(), query, args...).Scan(&n))
+	require.NoError(t, pool.QueryRow(t.Context(), query, args...).Scan(&n))
 	return n
 }
 
@@ -138,14 +59,14 @@ func countRows(t *testing.T, pool *pgxpool.Pool, query string, args ...any) int 
 // task id, and still exactly one row in tasks and one in outbox_events.
 // A fake cannot flatter this - the ledger's primary key is doing the work.
 //
-// The key is submitted three times, because ADR 0005 has two gates and each
+// The key is submitted three times, because there are two gates and each
 // needs its own duplicate: the second submit meets a warm cache and must be
 // stopped by phase 1, the third meets an evicted cache and must be stopped by
 // the ledger. Only the third proves Redis is a cache and not the gate.
 func TestSubmit_SameKeyTwiceYieldsOneTask(t *testing.T) {
-	pool := startPostgresWithMigrations(t)
-	rdb := startRedis(t)
-	ctx := context.Background()
+	pool := pgtest.Postgres(t)
+	rdb := pgtest.Redis(t)
+	ctx := t.Context()
 
 	txm := txmgr.New(pool)
 	tasksRepo := repotasks.New(txm)
@@ -153,7 +74,7 @@ func TestSubmit_SameKeyTwiceYieldsOneTask(t *testing.T) {
 	// Logs to the test's own output, so a fail-through shows up under -v
 	// instead of vanishing into slog.Default.
 	store := task.NewRedisIdempotencyStore(rdb, slog.New(slog.NewTextHandler(t.Output(), nil)))
-	commander := task.NewCommander(tasksRepo, outbox.New(txm), tx, store, acceptAnyHandler{})
+	commander := task.NewCommander(tasksRepo, outbox.New(txm), tx, store, acceptAnyHandler{}, nil)
 
 	cmd := task.SubmitCommand{
 		Handler: "echo", Payload: json.RawMessage(`{"msg":"hi"}`), IdempotencyKey: "k-1",
@@ -163,7 +84,7 @@ func TestSubmit_SameKeyTwiceYieldsOneTask(t *testing.T) {
 	first, created, err := commander.Submit(ctx, cmd)
 	require.NoError(t, err)
 	require.True(t, created)
-	require.Equal(t, 1, tx.n, "the first submit commits exactly one transaction")
+	require.EqualValues(t, 1, tx.n.Load(), "the first submit commits exactly one transaction")
 
 	stored, err := tasksRepo.Get(ctx, first.ID())
 	require.NoError(t, err, "the task id Submit returned must name a committed row")
@@ -187,7 +108,7 @@ func TestSubmit_SameKeyTwiceYieldsOneTask(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, created, "a replay is not a creation")
 	assert.Equal(t, first.ID(), second.ID())
-	assert.Equal(t, 1, tx.n, "a cache hit must not open a transaction")
+	assert.EqualValues(t, 1, tx.n.Load(), "a cache hit must not open a transaction")
 
 	// 4. Same key, cache evicted: the ledger is now the only gate. The
 	// transaction opens, its 23505 rolls it back, and the replay finds the task.
@@ -196,7 +117,7 @@ func TestSubmit_SameKeyTwiceYieldsOneTask(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, created, "a replay is not a creation")
 	assert.Equal(t, first.ID(), third.ID(), "the ledger must replay the original task")
-	assert.Equal(t, 2, tx.n, "a cold cache costs one transaction, and the ledger rolls it back")
+	assert.EqualValues(t, 2, tx.n.Load(), "a cold cache costs one transaction, and the ledger rolls it back")
 
 	// 5. Three submits, one of everything. Counted across the whole table, not
 	// by id: a duplicate would carry a NEW id, so `WHERE id = first` can never
@@ -206,27 +127,26 @@ func TestSubmit_SameKeyTwiceYieldsOneTask(t *testing.T) {
 	assert.Equal(t, 1, countRows(t, pool, `SELECT count(*) FROM outbox_events`))
 
 	// The one outbox row is the Submitted event and is stamped with this task.
-	// T2's D10 resolution: R1 orders the relay by aggregate_id, so a null or
-	// wrong one breaks it.
+	// The relay orders by aggregate_id, so a null or wrong one breaks it.
 	assert.Equal(t, 1, countRows(t, pool,
 		`SELECT count(*) FROM outbox_events WHERE type = 'task.submitted.v1' AND aggregate_id = $1`,
 		first.ID()))
 }
 
-// TestSubmit_IdempotencyConflict is ADR 0005's acceptance test, end to end:
+// TestSubmit_IdempotencyConflict is the acceptance test, end to end:
 // the conflict is caught from Redis while it is warm, from the ledger once it
 // is not, and still from the ledger after the task has been archived. The
 // transaction count tells the paths apart, because a 409 looks the same from
 // all three.
 func TestSubmit_IdempotencyConflict(t *testing.T) {
-	pool := startPostgresWithMigrations(t)
-	rdb := startRedis(t)
-	ctx := context.Background()
+	pool := pgtest.Postgres(t)
+	rdb := pgtest.Redis(t)
+	ctx := t.Context()
 
 	txm := txmgr.New(pool)
 	tx := &countingTx{inner: txm}
 	store := task.NewRedisIdempotencyStore(rdb, slog.New(slog.NewTextHandler(t.Output(), nil)))
-	commander := task.NewCommander(repotasks.New(txm), outbox.New(txm), tx, store, acceptAnyHandler{})
+	commander := task.NewCommander(repotasks.New(txm), outbox.New(txm), tx, store, acceptAnyHandler{}, nil)
 
 	// A is sent first in a non-canonical order. Were it already canonical, a ledger
 	// that hashed raw bytes would pass every step below by coincidence.
@@ -247,29 +167,30 @@ func TestSubmit_IdempotencyConflict(t *testing.T) {
 	first, created, err := submit(payloadA)
 	require.NoError(t, err)
 	require.True(t, created)
-	require.Equal(t, 1, tx.n)
+	require.EqualValues(t, 1, tx.n.Load())
 
 	// 2. A again, keys reordered: the same request. Warm cache, no transaction.
 	again, created, err := submit(payloadAReordered)
 	require.NoError(t, err)
 	assert.False(t, created)
 	assert.Equal(t, first.ID(), again.ID())
-	assert.Equal(t, 1, tx.n, "a warm replay opens no transaction")
+	assert.EqualValues(t, 1, tx.n.Load(), "a warm replay opens no transaction")
 
-	// 3. Payload B, warm cache: the conflict is decided from Redis alone.
+	// 3. Payload B, warm cache: the ledger confirms what Redis says, and no
+	// transaction opens.
 	_, _, err = submit(payloadB)
 	requireConflict(err, first.ID(), "warm cache, different payload")
-	assert.Equal(t, 1, tx.n, "a warm conflict opens no transaction")
+	assert.EqualValues(t, 1, tx.n.Load(), "a warm conflict opens no transaction")
 
 	// 4. B, cache flushed: now the ledger insert is the gate. One transaction
 	// opens and rolls back - the write protocol, not a leak.
 	require.NoError(t, rdb.FlushDB(ctx).Err())
 	_, _, err = submit(payloadB)
 	requireConflict(err, first.ID(), "cold cache, different payload")
-	assert.Equal(t, 2, tx.n)
+	assert.EqualValues(t, 2, tx.n.Load())
 
 	// 5. The task finishes and is archived; cache flushed again. A must still
-	// replay (D25): the ledger names the task, and Get finds it in the archive.
+	// replay: the ledger names the task, and Get finds it in the archive.
 	_, err = pool.Exec(ctx, `UPDATE tasks SET status = 'succeeded' WHERE id = $1`, first.ID())
 	require.NoError(t, err)
 	require.NoError(t, rdb.FlushDB(ctx).Err())
@@ -278,13 +199,13 @@ func TestSubmit_IdempotencyConflict(t *testing.T) {
 	assert.False(t, created)
 	assert.Equal(t, first.ID(), replayed.ID())
 	assert.Equal(t, domaintasks.StatusSucceeded, replayed.Status())
-	assert.Equal(t, 3, tx.n)
+	assert.EqualValues(t, 3, tx.n.Load())
 
 	// 6. ...and B is still refused, though the tasks row is gone entirely.
 	require.NoError(t, rdb.FlushDB(ctx).Err())
 	_, _, err = submit(payloadB)
 	requireConflict(err, first.ID(), "after archival, different payload")
-	assert.Equal(t, 4, tx.n)
+	assert.EqualValues(t, 4, tx.n.Load())
 
 	// 7. Six submits, one of everything - and the ledger holds the CANONICAL
 	// fingerprint, which is what made steps 2 and 5 replays.
@@ -300,18 +221,18 @@ func TestSubmit_IdempotencyConflict(t *testing.T) {
 	assert.Equal(t, want[:], hash)
 }
 
-// TestSubmit_KeyIsScopedByHandler is D28's regression test. The ledger's
-// primary key is (tenant, handler, key), so the same key under another handler
-// is another submit. Before C3 the Redis key was the bare idempotency key, and
-// the second submit below came back with the FIRST handler's task.
+// TestSubmit_KeyIsScopedByHandler is a regression test. The ledger's primary key
+// is (tenant, handler, key), so the same key under another handler is another
+// submit. When the Redis key was the bare idempotency key, the second submit
+// below came back with the FIRST handler's task.
 func TestSubmit_KeyIsScopedByHandler(t *testing.T) {
-	pool := startPostgresWithMigrations(t)
-	rdb := startRedis(t)
-	ctx := context.Background()
+	pool := pgtest.Postgres(t)
+	rdb := pgtest.Redis(t)
+	ctx := t.Context()
 
 	txm := txmgr.New(pool)
 	store := task.NewRedisIdempotencyStore(rdb, slog.New(slog.NewTextHandler(t.Output(), nil)))
-	commander := task.NewCommander(repotasks.New(txm), outbox.New(txm), txm, store, acceptAnyHandler{})
+	commander := task.NewCommander(repotasks.New(txm), outbox.New(txm), txm, store, acceptAnyHandler{}, nil)
 
 	submit := func(handler string) domaintasks.Task {
 		t.Helper()
@@ -329,4 +250,143 @@ func TestSubmit_KeyIsScopedByHandler(t *testing.T) {
 	assert.NotEqual(t, echo.ID(), other.ID())
 	assert.Equal(t, "other", other.Handler().Name(), "a warm entry for one handler must not answer another")
 	assert.Equal(t, 2, countRows(t, pool, `SELECT count(*) FROM idempotency_keys`))
+}
+
+// missingStore is an IdempotencyStore that never hits, so every racer below is
+// decided by the ledger's primary key and not by Redis.
+type missingStore struct{}
+
+func (missingStore) Lookup(context.Context, domaintasks.Handler, domaintasks.IdempotencyKey) (domaintasks.IdempotencyRecord, bool, error) {
+	return domaintasks.IdempotencyRecord{}, false, nil
+}
+
+func (missingStore) Record(context.Context, domaintasks.Handler, domaintasks.IdempotencyKey, domaintasks.IdempotencyRecord) error {
+	return nil
+}
+
+// TestSubmit_ConcurrentSameKey is the race the ledger exists for: N submits
+// with one key, released together. Exactly one creates; the rest wait on the
+// open transaction's primary-key entry, collide after its commit, and replay.
+func TestSubmit_ConcurrentSameKey(t *testing.T) {
+	pool := pgtest.Postgres(t)
+	txm := txmgr.New(pool)
+	commander := task.NewCommander(repotasks.New(txm), outbox.New(txm), txm, missingStore{}, acceptAnyHandler{}, nil)
+
+	const n = 16
+	var (
+		wg      sync.WaitGroup
+		start   = make(chan struct{})
+		ids     [n]uuid.UUID
+		created [n]bool
+		errs    [n]error
+	)
+	for i := range n {
+		wg.Go(func() {
+			<-start
+			tk, ok, err := commander.Submit(t.Context(), task.SubmitCommand{
+				Handler: "echo", Payload: json.RawMessage(`{"a":1}`), IdempotencyKey: "race-1",
+			})
+			ids[i], created[i], errs[i] = tk.ID(), ok, err
+		})
+	}
+	close(start)
+	wg.Wait()
+
+	for i := range n {
+		require.NoError(t, errs[i], "racer %d", i)
+		assert.Equal(t, ids[0], ids[i], "every racer must name the same task")
+	}
+	assert.Equal(t, 1, countTrue(created[:]), "exactly one racer creates")
+	assert.Equal(t, 1, countRows(t, pool, `SELECT count(*) FROM tasks`))
+	assert.Equal(t, 1, countRows(t, pool, `SELECT count(*) FROM idempotency_keys`))
+	assert.Equal(t, 1, countRows(t, pool, `SELECT count(*) FROM outbox_events`))
+}
+
+// TestSubmit_ConcurrentDifferentPayloads is the same race with a client bug in it:
+// every racer reuses one key with its own payload. One creates, and every other
+// must be refused with the winner's id, not handed the winner's task.
+func TestSubmit_ConcurrentDifferentPayloads(t *testing.T) {
+	pool := pgtest.Postgres(t)
+	txm := txmgr.New(pool)
+	commander := task.NewCommander(repotasks.New(txm), outbox.New(txm), txm, missingStore{}, acceptAnyHandler{}, nil)
+
+	const n = 16
+	var (
+		wg      sync.WaitGroup
+		start   = make(chan struct{})
+		ids     [n]uuid.UUID
+		created [n]bool
+		errs    [n]error
+	)
+	for i := range n {
+		wg.Go(func() {
+			<-start
+			tk, ok, err := commander.Submit(t.Context(), task.SubmitCommand{
+				Handler: "echo", Payload: json.RawMessage(fmt.Sprintf(`{"a":%d}`, i)), IdempotencyKey: "race-2",
+			})
+			ids[i], created[i], errs[i] = tk.ID(), ok, err
+		})
+	}
+	close(start)
+	wg.Wait()
+
+	require.Equal(t, 1, countTrue(created[:]), "exactly one racer creates")
+	winner := ids[slices.Index(created[:], true)]
+
+	for i := range n {
+		if created[i] {
+			require.NoError(t, errs[i])
+			continue
+		}
+		ce, ok := errors.AsType[*task.ConflictError](errs[i])
+		require.True(t, ok, "racer %d: got %v", i, errs[i])
+		assert.Equal(t, winner, ce.ExistingTaskID)
+	}
+	assert.Equal(t, 1, countRows(t, pool, `SELECT count(*) FROM tasks`))
+	assert.Equal(t, 1, countRows(t, pool, `SELECT count(*) FROM idempotency_keys`))
+	assert.Equal(t, 1, countRows(t, pool, `SELECT count(*) FROM outbox_events`))
+}
+
+// countTrue counts the racers that report having created the task.
+func countTrue(flags []bool) int {
+	n := 0
+	for _, f := range flags {
+		if f {
+			n++
+		}
+	}
+	return n
+}
+
+// TestSubmit_PayloadBoundaryIsStorable closes the loop on the domain's payload
+// limits. The unit tests prove what is refused; only a real JSONB column can prove
+// that everything let through is actually stored, which is what makes the refusals
+// the whole of the client-triggerable 500 and not just part of it.
+func TestSubmit_PayloadBoundaryIsStorable(t *testing.T) {
+	pool := pgtest.Postgres(t)
+	txm := txmgr.New(pool)
+	commander := task.NewCommander(repotasks.New(txm), outbox.New(txm), txm, missingStore{}, acceptAnyHandler{}, nil)
+
+	tests := []struct {
+		name    string
+		payload string
+	}{
+		{"largest double", `{"n":1.7976931348623157e308}`},
+		{"smallest exponent allowed", `{"n":1e-999}`},
+		{"zero at the exponent bound", `{"n":0e-999}`},
+		{"long exact decimal", `{"n":0.` + strings.Repeat("1", 1000) + `}`},
+		{"long integer", `{"n":` + strings.Repeat("9", 300) + `}`},
+		{"literal backslash-u", `{"s":"\\u0000"}`},
+		{"astral plane", `{"s":"😀"}`},
+		{"as deep as the canonicalizer allows", strings.Repeat(`[`, 9990) + strings.Repeat(`]`, 9990)},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, created, err := commander.Submit(t.Context(), task.SubmitCommand{
+				Handler: "echo", Payload: json.RawMessage(tt.payload), IdempotencyKey: fmt.Sprintf("k-%d", i),
+			})
+			require.NoError(t, err, "the domain let this through, so Postgres must take it")
+			assert.True(t, created)
+		})
+	}
 }

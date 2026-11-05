@@ -16,6 +16,8 @@ import (
 
 	"github.com/RomanAgaltsev/flowhand/internal/api"
 	"github.com/RomanAgaltsev/flowhand/internal/api/oas"
+	"github.com/RomanAgaltsev/flowhand/internal/domain"
+	domaintasks "github.com/RomanAgaltsev/flowhand/internal/domain/tasks"
 	"github.com/RomanAgaltsev/flowhand/internal/service/task"
 )
 
@@ -82,7 +84,7 @@ func TestErrorEnvelopes_OnTheWire(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req, err := http.NewRequestWithContext(
-				context.Background(), tt.method, ts.URL+tt.path, strings.NewReader(tt.body),
+				t.Context(), tt.method, ts.URL+tt.path, strings.NewReader(tt.body),
 			)
 			require.NoError(t, err)
 			req.Header.Set("Content-Type", "application/json")
@@ -147,7 +149,7 @@ func TestIdempotencyConflict_OnTheWire(t *testing.T) {
 	ts := httptest.NewServer(oasSrv)
 	t.Cleanup(ts.Close)
 
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, ts.URL+"/v1/tasks",
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, ts.URL+"/v1/tasks",
 		strings.NewReader(`{"handler":"echo","idempotency_key":"k-1","payload":{"a":2}}`))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
@@ -173,4 +175,106 @@ func TestIdempotencyConflict_OnTheWire(t *testing.T) {
 	assert.Equal(t, "idempotency_conflict", envelope.Code)
 	assert.NotEmpty(t, envelope.Message)
 	assert.Equal(t, existing.String(), envelope.ExistingTaskID)
+}
+
+// The ports below let TestCreateTask_HostileInputOnTheWire run the real Commander
+// without a database. Embedding the port keeps them to the methods a refused
+// submit could reach; anything else panics, which is the test failing loudly.
+type acceptingTasks struct{ task.TasksRepo }
+
+func (acceptingTasks) Insert(context.Context, domaintasks.Task, *domaintasks.IdempotencyClaim) error {
+	return nil
+}
+
+type acceptingOutbox struct{}
+
+func (acceptingOutbox) Append(context.Context, ...domain.Event) error { return nil }
+
+type directTx struct{}
+
+func (directTx) WithinTx(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) }
+
+type anyHandler struct{}
+
+func (anyHandler) Has(string) bool { return true }
+
+type coldCache struct{}
+
+func (coldCache) Lookup(
+	context.Context, domaintasks.Handler, domaintasks.IdempotencyKey,
+) (domaintasks.IdempotencyRecord, bool, error) {
+	return domaintasks.IdempotencyRecord{}, false, nil
+}
+
+func (coldCache) Record(
+	context.Context, domaintasks.Handler, domaintasks.IdempotencyKey, domaintasks.IdempotencyRecord,
+) error {
+	return nil
+}
+
+// TestCreateTask_HostileInputOnTheWire sends what Postgres refuses through the
+// real server and the real Commander. A 500 a client can produce on demand counts
+// against the submit SLO and pages on error rate, so the assertion that matters
+// is the status: every one of these is the client's fault. commander_integration_test.go
+// proves Postgres takes what gets past this.
+func TestCreateTask_HostileInputOnTheWire(t *testing.T) {
+	cmd := task.NewCommander(acceptingTasks{}, acceptingOutbox{}, directTx{}, coldCache{}, anyHandler{}, discardLogger())
+	oasSrv, err := oas.NewServer(api.NewHandler(cmd, &fakeQuerier{}, discardLogger()), oas.WithErrorHandler(api.ErrorHandler))
+	require.NoError(t, err)
+	ts := httptest.NewServer(oasSrv)
+	t.Cleanup(ts.Close)
+
+	keyed := func(payload string) string {
+		return `{"handler":"echo","idempotency_key":"k-1","payload":` + payload + `}`
+	}
+	keyless := func(payload string) string {
+		return `{"handler":"echo","payload":` + payload + `}`
+	}
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"NUL in the key", `{"handler":"echo","idempotency_key":"k\u0000"}`},
+		{"control character in the key", `{"handler":"echo","idempotency_key":"a\u001fb"}`},
+		{"DEL in the key", `{"handler":"echo","idempotency_key":"\u007f"}`},
+		{"NUL in the handler", `{"handler":"a\u0000b"}`},
+		{"invalid utf-8 in the handler", "{\"handler\":\"\xff\"}"},
+		{"NUL in a keyed payload", keyed(`{"a":"\u0000"}`)},
+		{"NUL in a keyless payload", keyless(`{"a":"\u0000"}`)},
+		{"NUL in a payload object name", keyless(`{"\u0000":1}`)},
+		{"number past numeric's weight", keyless(`{"n":1e999999}`)},
+		{"number past numeric's scale", keyless(`{"n":1e-16384}`)},
+		{"number past double range", keyless(`{"n":1e400}`)},
+		{"nested duplicate name", keyless(`{"a":{"b":1,"b":2}}`)},
+		{"invalid utf-8 in a payload", keyless("{\"a\":\"\xff\"}")},
+		{"lone surrogate in a payload", keyless(`{"a":"\ud800"}`)},
+		{"control character in a payload", keyless("{\"a\":\"\x01\"}")},
+		{"payload nested past the decoder's limit", keyless(`{"a":` + strings.Repeat("[", 20000) + strings.Repeat("]", 20000) + `}`)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, ts.URL+"/v1/tasks", strings.NewReader(tt.body))
+			require.NoError(t, err)
+			req.Header.Set("Content-Type", "application/json")
+
+			resp, err := ts.Client().Do(req)
+			require.NoError(t, err)
+			defer func() {
+				if err := resp.Body.Close(); err != nil {
+					t.Logf("close response body: %v", err)
+				}
+			}()
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+
+			assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "body was %q", body)
+
+			var envelope struct {
+				Code string `json:"code"`
+			}
+			require.NoError(t, json.Unmarshal(body, &envelope), "body was %q", body)
+			assert.Equal(t, "invalid_request_body", envelope.Code)
+		})
+	}
 }

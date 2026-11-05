@@ -1,9 +1,10 @@
 package tasks
 
 import (
-	"crypto/sha256"
+	"bytes"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand"
 	"strings"
 	"testing"
@@ -15,8 +16,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// propCases is the plan's measurement: 10^4 generated cases per value object.
-const propCases = 10000
+// propertyCases is how many generated cases a property runs: 10^4 normally, and a
+// tenth of that under -short, which is what the -race gate uses. The detector
+// makes these properties several times slower, and the suite has to stay inside
+// go test's default timeout as properties are added.
+func propertyCases() int {
+	if testing.Short() {
+		return 1_000
+	}
+	return 10_000
+}
 
 // fakeCatalog stands in for the worker's registry. The domain cannot import
 // the real one — that would point the dependency arrow outward — so tests
@@ -46,9 +55,11 @@ func printableASCII() gopter.Gen {
 //
 // The property tests below catch any bad boundary automatically; these named
 // examples exist because a fixed failing case is far easier to debug than a
-// shrunk counterexample (Test strategy, "Constructor boundaries").
+// shrunk counterexample.
 
 func TestPriorityConstructs(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name    string
 		in      uint8
@@ -76,6 +87,8 @@ func TestPriorityConstructs(t *testing.T) {
 // Higher = sooner. The method exists so the call site never has to
 // remember which way the numbers run.
 func TestPriorityIsHigherThan(t *testing.T) {
+	t.Parallel()
+
 	assert.True(t, Priority(9).IsHigherThan(Priority(3)))
 	assert.False(t, Priority(3).IsHigherThan(Priority(9)))
 	assert.False(t, Priority(5).IsHigherThan(Priority(5))) // strict: a tie is not "higher"
@@ -84,20 +97,30 @@ func TestPriorityIsHigherThan(t *testing.T) {
 }
 
 func TestIdempotencyKeyConstructs(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name    string
 		in      string
 		wantErr error
 	}{
 		{name: "empty", in: "", wantErr: ErrInvalidIdempotencyKey},
-		{name: "255 ASCII bytes", in: strings.Repeat("a", 255)},
-		{name: "256 ASCII bytes", in: strings.Repeat("a", 256), wantErr: ErrInvalidIdempotencyKey},
+		{name: "128 ASCII bytes", in: strings.Repeat("a", 128)},
+		{name: "129 ASCII bytes", in: strings.Repeat("a", 129), wantErr: ErrIdempotencyKeyTooLong},
 		// "café" is 4 runes but 5 bytes — the byte-vs-rune ambiguity the
 		// ASCII check exists to settle. The check must run before length,
 		// or a long non-ASCII string reports the wrong reason.
 		{name: "multi-byte rune", in: "café", wantErr: ErrInvalidIdempotencyKey},
 		{name: "high-bit byte (invalid UTF-8)", in: "\xff", wantErr: ErrInvalidIdempotencyKey},
 		{name: "printable ASCII incl. punctuation", in: "order-123: pending!"},
+		// Postgres refuses NUL in a TEXT column outright, and the wire pattern is the
+		// only other thing in the way of a 500. The rest have no business in a log.
+		{name: "NUL", in: "\x00", wantErr: ErrIdempotencyKeyNotPrintable},
+		{name: "NUL inside", in: "k\x00", wantErr: ErrIdempotencyKeyNotPrintable},
+		{name: "control character", in: "a\x1fb", wantErr: ErrIdempotencyKeyNotPrintable},
+		{name: "DEL", in: "\x7f", wantErr: ErrIdempotencyKeyNotPrintable},
+		{name: "space is printable", in: "a b"},
+		{name: "tilde is the last printable byte", in: "~"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -115,6 +138,8 @@ func TestIdempotencyKeyConstructs(t *testing.T) {
 // A value object has no identity: two keys built from the same string must be
 // interchangeable.
 func TestIdempotencyKeyValueSemantics(t *testing.T) {
+	t.Parallel()
+
 	first, err := NewIdempotencyKey("idem-1")
 	require.NoError(t, err)
 	second, err := NewIdempotencyKey("idem-1")
@@ -123,24 +148,24 @@ func TestIdempotencyKeyValueSemantics(t *testing.T) {
 	assert.Equal(t, first, second)
 }
 
-// Hash is the Redis fast-path lookup key and the payload_hash comparison
-// basis, where instability would silently break dedup. Determinism sounds
-// trivial until someone hashes a map.
-func TestIdempotencyKeyHashIsStable(t *testing.T) {
-	first, err := NewIdempotencyKey("idem-1")
-	require.NoError(t, err)
-	second, err := NewIdempotencyKey("idem-1")
+// TestIdempotencyKeyLogValue pins why the method exists: the JSON handler marshals
+// a struct with no exported fields as {}, which loses the one field an operator
+// needs.
+func TestIdempotencyKeyLogValue(t *testing.T) {
+	t.Parallel()
+
+	key, err := NewIdempotencyKey("idem-1")
 	require.NoError(t, err)
 
-	assert.Equal(t, first.Hash(), second.Hash())
-	assert.Equal(t, sha256.Sum256([]byte("idem-1")), first.Hash())
+	var out bytes.Buffer
+	slog.New(slog.NewJSONHandler(&out, nil)).Info("msg", "idempotency_key", key)
 
-	other, err := NewIdempotencyKey("idem-2")
-	require.NoError(t, err)
-	assert.NotEqual(t, first.Hash(), other.Hash())
+	assert.Contains(t, out.String(), `"idempotency_key":"idem-1"`)
 }
 
 func TestHandlerConstructs(t *testing.T) {
+	t.Parallel()
+
 	cat := newFakeCatalog("a", "b", "c")
 
 	for _, name := range []string{"a", "b", "c"} {
@@ -154,12 +179,21 @@ func TestHandlerConstructs(t *testing.T) {
 
 	_, err = NewHandler("", cat)
 	assert.ErrorIs(t, err, ErrEmptyHandler)
+
+	// Checked before the catalog: a TEXT column refuses both, and a permissive
+	// catalog must not be what lets them through to a 500.
+	for _, name := range []string{"a\x00b", "\xff"} {
+		_, err = NewHandler(name, newFakeCatalog(name))
+		assert.ErrorIs(t, err, ErrInvalidHandlerName, "%q", name)
+	}
 }
 
 // A Handler value is proof the name was registered at construction time —
 // and only then. Validity is as-of-construction; the same string through the
 // same catalog must yield interchangeable values.
 func TestHandlerValueSemantics(t *testing.T) {
+	t.Parallel()
+
 	cat := newFakeCatalog("a")
 
 	first, err := NewHandler("a", cat)
@@ -171,11 +205,15 @@ func TestHandlerValueSemantics(t *testing.T) {
 }
 
 func TestHandlerRejectsNilCatalog(t *testing.T) {
+	t.Parallel()
+
 	_, err := NewHandler("a", nil)
 	assert.ErrorIs(t, err, ErrNilHandlerCatalog)
 }
 
 func TestLeaseEpochIsStaleVs(t *testing.T) {
+	t.Parallel()
+
 	const maxEpoch = LeaseEpoch(^uint64(0))
 	tests := []struct {
 		name  string
@@ -197,6 +235,8 @@ func TestLeaseEpochIsStaleVs(t *testing.T) {
 }
 
 func TestShardIDBucket(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name string
 		s    ShardID
@@ -226,8 +266,10 @@ func TestShardIDBucket(t *testing.T) {
 // counterexample text gopter reports next to the shrunk value.
 
 func TestPropertiesPriority(t *testing.T) {
+	t.Parallel()
+
 	params := gopter.DefaultTestParameters()
-	params.MinSuccessfulTests = propCases
+	params.MinSuccessfulTests = propertyCases()
 	properties := gopter.NewProperties(params)
 
 	// A clean partition of the whole uint8 range: everything at or below the
@@ -235,9 +277,9 @@ func TestPropertiesPriority(t *testing.T) {
 	// Strictly stronger than a table at 0/9/10 — it also covers 255, 128 and
 	// every value nobody thought to write down.
 	//
-	// The boundary is deliberately the literal 9 from schema.md, NOT
+	// The boundary is deliberately the literal 9, NOT
 	// MaxPriority: if the constant ever drifts from the published range, this
-	// property is the tripwire that catches it (Step 5's break-one-on-purpose
+	// property is the tripwire that catches it (the break-one-on-purpose
 	// check relies on exactly that).
 	const publishedMax uint8 = 9
 	properties.Property("NewPriority accepts exactly 0..9", prop.ForAll(
@@ -267,19 +309,21 @@ func TestPropertiesPriority(t *testing.T) {
 }
 
 func TestPropertiesIdempotencyKey(t *testing.T) {
+	t.Parallel()
+
 	// Empty is a degenerate case with nothing to generate; pin it here so
-	// the property file stands alone for Step 5's checklist.
+	// the property file stands alone.
 	if _, err := NewIdempotencyKey(""); err == nil || !errors.Is(err, ErrInvalidIdempotencyKey) {
 		t.Errorf("empty key: want ErrInvalidIdempotencyKey, got %v", err)
 	}
 
 	params := gopter.DefaultTestParameters()
-	params.MinSuccessfulTests = propCases
-	params.MinSize = 1 // string lengths 1..255 — MaxSize is exclusive
-	params.MaxSize = 256
+	params.MinSuccessfulTests = propertyCases()
+	params.MinSize = 1 // string lengths 1..128 — MaxSize is exclusive
+	params.MaxSize = MaxIdempotencyKeyBytes + 1
 	properties := gopter.NewProperties(params)
 
-	properties.Property("every non-empty ASCII string of at most 255 bytes constructs", prop.ForAll(
+	properties.Property("every non-empty printable ASCII string of at most 128 bytes constructs", prop.ForAll(
 		func(s string) string {
 			k, err := NewIdempotencyKey(s)
 			switch {
@@ -301,7 +345,7 @@ func TestPropertiesIdempotencyKey(t *testing.T) {
 			s := prefix + seed + suffix
 			_, err := NewIdempotencyKey(s)
 			// Asserting the SPECIFIC sentinel is what makes this property honest:
-			// prefix+suffix can exceed 255 bytes, so the umbrella sentinel alone
+			// prefix+suffix can exceed 128 bytes, so the umbrella sentinel alone
 			// would also be satisfied by the length check firing instead.
 			if !errors.Is(err, ErrIdempotencyKeyNotASCII) {
 				return fmt.Sprintf("%q: want ErrIdempotencyKeyNotASCII, got %v", s, err)
@@ -313,9 +357,9 @@ func TestPropertiesIdempotencyKey(t *testing.T) {
 		printableASCII(),
 	))
 
-	properties.Property("ASCII strings longer than 255 bytes fail", prop.ForAll(
+	properties.Property("ASCII strings longer than 128 bytes fail", prop.ForAll(
 		func(extra int) string {
-			s := strings.Repeat("a", 256+extra)
+			s := strings.Repeat("a", MaxIdempotencyKeyBytes+1+extra)
 			_, err := NewIdempotencyKey(s)
 			switch {
 			case err == nil:
@@ -332,8 +376,10 @@ func TestPropertiesIdempotencyKey(t *testing.T) {
 }
 
 func TestPropertiesHandler(t *testing.T) {
+	t.Parallel()
+
 	params := gopter.DefaultTestParameters()
-	params.MinSuccessfulTests = propCases
+	params.MinSuccessfulTests = propertyCases()
 	properties := gopter.NewProperties(params)
 
 	// Has is the single source of truth: construction must agree with the
@@ -369,8 +415,10 @@ func TestPropertiesHandler(t *testing.T) {
 }
 
 func TestPropertiesLeaseEpochIsStaleVs(t *testing.T) {
+	t.Parallel()
+
 	params := gopter.DefaultTestParameters()
-	params.MinSuccessfulTests = propCases
+	params.MinSuccessfulTests = propertyCases()
 	properties := gopter.NewProperties(params)
 
 	// The fencing test must order any two distinct epochs and never mark an
@@ -403,18 +451,23 @@ func TestPropertiesLeaseEpochIsStaleVs(t *testing.T) {
 // The one property here that can fail for an honest reason: 10^4 samples
 // over 8 buckets has real variance, and ±20% is a judgement call rather than
 // a law. The seed is fixed so a failure reproduces; if this ever flakes, raise
-// propCases rather than widening the tolerance — a wider tolerance stops the
+// samples rather than widening the tolerance — a wider tolerance stops the
 // test detecting an actually-skewed mapping.
 func TestPropertiesShardIDBucketDistribution(t *testing.T) {
-	const buckets = 8
-	expected := propCases / buckets  // 1250
-	delta := float64(expected) * 0.2 // ±20%, the plan's tolerance
+	t.Parallel()
+
+	const (
+		buckets = 8
+		samples = 10_000 // fixed, not propertyCases: the tolerance below is sized for it
+	)
+	expected := samples / buckets    // 1250
+	delta := float64(expected) * 0.2 // ±20%
 
 	counts := make([]int, buckets)
 	//nolint:gosec // G404: fixed seed on purpose — reproducible failures,
 	// no security relevance in a distribution test.
 	rng := rand.New(rand.NewSource(1))
-	for range propCases {
+	for range samples {
 		//nolint:gosec // G115: Intn(65536) < 65536 by construction.
 		s := ShardID(rng.Intn(65536))
 		b := s.Bucket(buckets)
@@ -425,6 +478,6 @@ func TestPropertiesShardIDBucketDistribution(t *testing.T) {
 
 	for bucket, got := range counts {
 		assert.InDelta(t, expected, got, delta,
-			"bucket %d: %d of %d samples is outside ±20%% of %d", bucket, got, propCases, expected)
+			"bucket %d: %d of %d samples is outside ±20%% of %d", bucket, got, samples, expected)
 	}
 }

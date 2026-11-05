@@ -12,7 +12,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const createAttempt = `-- name: CreateAttempt :one
+const createAttempt = `-- name: CreateAttempt :exec
 INSERT INTO task_attempts (
     id, task_id, attempt, worker_id, status,
     started_at, finished_at, last_heartbeat, error_class, error_message
@@ -20,7 +20,6 @@ INSERT INTO task_attempts (
     $1, $2, $3, $4, $5,
     $6, $7, $8, $9, $10
 )
-RETURNING id, task_id, attempt, worker_id, status, started_at, finished_at, last_heartbeat, progress_pct, error_class, error_message, error_stack
 `
 
 type CreateAttemptParams struct {
@@ -36,8 +35,8 @@ type CreateAttemptParams struct {
 	ErrorMessage  *string    `json:"error_message"`
 }
 
-func (q *Queries) CreateAttempt(ctx context.Context, arg CreateAttemptParams) (TaskAttempt, error) {
-	row := q.db.QueryRow(ctx, createAttempt,
+func (q *Queries) CreateAttempt(ctx context.Context, arg CreateAttemptParams) error {
+	_, err := q.db.Exec(ctx, createAttempt,
 		arg.ID,
 		arg.TaskID,
 		arg.Attempt,
@@ -49,41 +48,26 @@ func (q *Queries) CreateAttempt(ctx context.Context, arg CreateAttemptParams) (T
 		arg.ErrorClass,
 		arg.ErrorMessage,
 	)
-	var i TaskAttempt
-	err := row.Scan(
-		&i.ID,
-		&i.TaskID,
-		&i.Attempt,
-		&i.WorkerID,
-		&i.Status,
-		&i.StartedAt,
-		&i.FinishedAt,
-		&i.LastHeartbeat,
-		&i.ProgressPct,
-		&i.ErrorClass,
-		&i.ErrorMessage,
-		&i.ErrorStack,
-	)
-	return i, err
+	return err
 }
 
-const createTask = `-- name: CreateTask :one
+const createTask = `-- name: CreateTask :exec
 INSERT INTO tasks (
-    id, idempotency_key, payload, handler,
+    id, idempotency_key, payload, status, handler,
     tenant_id, priority, earliest_at, attempt, max_attempts,
-    shard_id, cancel_requested, updated_at
+    shard_id, cancel_requested, created_at, updated_at, trace_id
 ) VALUES (
-    $1, $2, $3, $4,
-    $5, $6, $7, $8, $9,
-    $10, $11, $12
+    $1, $2, $3, $4, $5,
+    $6, $7, $8, $9, $10,
+    $11, $12, $13, $14, $15
 )
-RETURNING id, idempotency_key, payload, status, created_at, handler, tenant_id, priority, earliest_at, attempt, max_attempts, shard_id, cancel_requested, updated_at, started_at, worker_id, lease_until, lease_epoch, trace_id
 `
 
 type CreateTaskParams struct {
 	ID              uuid.UUID `json:"id"`
 	IdempotencyKey  *string   `json:"idempotency_key"`
 	Payload         []byte    `json:"payload"`
+	Status          string    `json:"status"`
 	Handler         string    `json:"handler"`
 	TenantID        uuid.UUID `json:"tenant_id"`
 	Priority        int16     `json:"priority"`
@@ -92,14 +76,19 @@ type CreateTaskParams struct {
 	MaxAttempts     int32     `json:"max_attempts"`
 	ShardID         int32     `json:"shard_id"`
 	CancelRequested bool      `json:"cancel_requested"`
+	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
+	TraceID         *string   `json:"trace_id"`
 }
 
-func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error) {
-	row := q.db.QueryRow(ctx, createTask,
+// Every value comes from the aggregate, created_at and status included: the
+// response to a submit and a later read of the same row must agree.
+func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) error {
+	_, err := q.db.Exec(ctx, createTask,
 		arg.ID,
 		arg.IdempotencyKey,
 		arg.Payload,
+		arg.Status,
 		arg.Handler,
 		arg.TenantID,
 		arg.Priority,
@@ -108,40 +97,21 @@ func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, e
 		arg.MaxAttempts,
 		arg.ShardID,
 		arg.CancelRequested,
+		arg.CreatedAt,
 		arg.UpdatedAt,
+		arg.TraceID,
 	)
-	var i Task
-	err := row.Scan(
-		&i.ID,
-		&i.IdempotencyKey,
-		&i.Payload,
-		&i.Status,
-		&i.CreatedAt,
-		&i.Handler,
-		&i.TenantID,
-		&i.Priority,
-		&i.EarliestAt,
-		&i.Attempt,
-		&i.MaxAttempts,
-		&i.ShardID,
-		&i.CancelRequested,
-		&i.UpdatedAt,
-		&i.StartedAt,
-		&i.WorkerID,
-		&i.LeaseUntil,
-		&i.LeaseEpoch,
-		&i.TraceID,
-	)
-	return i, err
+	return err
 }
 
 const getArchivedTaskByID = `-- name: GetArchivedTaskByID :one
-SELECT id, idempotency_key, payload, status, created_at, handler, tenant_id, priority, earliest_at, attempt, max_attempts, shard_id, cancel_requested, updated_at, started_at, worker_id, lease_until, lease_epoch, trace_id, finished_at, result, result_url, result_size_bytes FROM tasks_archive WHERE id = $1
+SELECT id, idempotency_key, payload, status, created_at, handler, tenant_id, priority, earliest_at, attempt, max_attempts, shard_id, cancel_requested, updated_at, started_at, worker_id, lease_until, lease_epoch, trace_id, finished_at, result, result_url, result_size_bytes FROM tasks_archive WHERE id = $1 ORDER BY finished_at DESC LIMIT 1
 `
 
 // The read fallback for a task that has reached a terminal status: the archive
 // trigger moves the row here in the same statement. Every partition's (id, finished_at)
-// primary key leads with id.
+// primary key leads with id. id alone is not unique across partitions, so the
+// newest row wins: a future replay of a dead-lettered id must not read an old one.
 func (q *Queries) GetArchivedTaskByID(ctx context.Context, id uuid.UUID) (TasksArchive, error) {
 	row := q.db.QueryRow(ctx, getArchivedTaskByID, id)
 	var i TasksArchive
@@ -340,9 +310,9 @@ type UpdateTaskStatusParams struct {
 }
 
 // The fenced status write. :execrows is load-bearing: the row count IS the
-// fence result - 0 means the stamped lease_eposh no longer matches, ownership
+// fence result - 0 means the stamped lease_epoch no longer matches, ownership
 // moved and the caller must abort without emitting events.
-// lease_epoch in NULLable (never dispatched). NULL never matches, so an
+// lease_epoch is NULLable (never dispatched). NULL never matches, so an
 // unleased row can never be transitioned through this query - by design.
 // A terminal status here fires trg_tasks_archive, which moves the row out of
 // tasks within this same statement.
@@ -370,8 +340,7 @@ ON CONFLICT (id) DO UPDATE SET
     status        = EXCLUDED.status,
     finished_at   = EXCLUDED.finished_at,
     error_class   = EXCLUDED.error_class,
-    error_message = EXCLUDED.error_message,
-    error_stack   = EXCLUDED.error_stack
+    error_message = EXCLUDED.error_message
 `
 
 type UpsertAttemptParams struct {
@@ -391,8 +360,9 @@ type UpsertAttemptParams struct {
 
 // The attempt row, written by PersistTransition: INSERT when the transition
 // opened the attempt (dispatch), UPDATE when it closed it (result).
-// On conflict only the lifecycle columns are touched: started_at, worker_id,
-// last_heartbeat and progress_pct belong to dispatch and heartbeats.
+// On conflict the close writes status, finished_at, error_class and
+// error_message. It deliberately leaves started_at, worker_id, last_heartbeat,
+// progress_pct and error_stack alone: those belong to dispatch and heartbeats.
 func (q *Queries) UpsertAttempt(ctx context.Context, arg UpsertAttemptParams) error {
 	_, err := q.db.Exec(ctx, upsertAttempt,
 		arg.ID,

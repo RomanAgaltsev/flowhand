@@ -13,6 +13,8 @@ import (
 )
 
 func TestSubmit(t *testing.T) {
+	t.Parallel()
+
 	// UUIDv7 to match what the Commander mints, and a UTC instant truncated to
 	// timestamptz resolution: time.Now() carries a monotonic reading that
 	// reflect.DeepEqual compares as part of the struct, so a bare Now() makes
@@ -53,6 +55,8 @@ func TestSubmit(t *testing.T) {
 // The two invariants Submit owns, because no value object can see them: a
 // budget of zero and a nil payload.
 func TestSubmitRejects(t *testing.T) {
+	t.Parallel()
+
 	now := time.Now().UTC()
 
 	t.Run("zero max attempts", func(t *testing.T) {
@@ -79,13 +83,13 @@ func TestSubmitRejects(t *testing.T) {
 //
 // This is written out separately from the implementation ON PURPOSE. A test
 // that derives its legal set from the code it tests proves only that the code
-// agrees with itself. These rows are the specification (plan Step 4), duplicated
+// agrees with itself. These rows are the specification, duplicated
 // deliberately.
 //
 // Note what is NOT here: there is no running -> failed -> pending retry path.
 // A transient failure goes running -> retry_scheduled DIRECTLY, because the
 // archive trigger treats `failed` as terminal and would move the row out
-// mid-retry (schema.md, 2026-07-04 review F9). `Fail` is terminal.
+// mid-retry. `Fail` is terminal.
 // ---------------------------------------------------------------------------
 
 const (
@@ -189,6 +193,8 @@ func taskIn(status Status) Task {
 // it found it. A guard that returns an error AFTER mutating is worse than no
 // guard.
 func TestTransitions(t *testing.T) {
+	t.Parallel()
+
 	now := time.Now().UTC().Truncate(time.Microsecond)
 
 	for _, method := range allMethods {
@@ -223,6 +229,8 @@ func TestTransitions(t *testing.T) {
 
 // Start opens an attempt; nothing else does.
 func TestStartOpensAnAttempt(t *testing.T) {
+	t.Parallel()
+
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	task := taskIn(StatusPending)
 	attemptID := uuid.Must(uuid.NewV7())
@@ -240,6 +248,8 @@ func TestStartOpensAnAttempt(t *testing.T) {
 
 // Complete and Fail close the open attempt and stamp its outcome.
 func TestTerminalMethodsCloseTheOpenAttempt(t *testing.T) {
+	t.Parallel()
+
 	now := time.Now().UTC().Truncate(time.Microsecond)
 
 	t.Run("complete", func(t *testing.T) {
@@ -268,6 +278,8 @@ func TestTerminalMethodsCloseTheOpenAttempt(t *testing.T) {
 // ScheduleRetry already closed it, and the cancellation is a fact about the
 // TASK, not about that attempt.
 func TestCancelDoesNotOverwriteAClosedAttempt(t *testing.T) {
+	t.Parallel()
+
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	task := taskIn(StatusRetryScheduled)
 
@@ -282,6 +294,8 @@ func TestCancelDoesNotOverwriteAClosedAttempt(t *testing.T) {
 // sentinel: running -> retry_scheduled is a legal edge, so this is not a caller
 // bug. The Commander branches on it to dead-letter instead of retrying.
 func TestScheduleRetryRefusesWhenAttemptsExhausted(t *testing.T) {
+	t.Parallel()
+
 	now := time.Now().UTC().Truncate(time.Microsecond)
 
 	task, err := Submit(uuid.Must(uuid.NewV7()), Handler{name: "echo"}, 0,
@@ -302,6 +316,8 @@ func TestScheduleRetryRefusesWhenAttemptsExhausted(t *testing.T) {
 }
 
 func TestIsTerminal(t *testing.T) {
+	t.Parallel()
+
 	for _, status := range allStatuses {
 		want := status == StatusSucceeded || status == StatusFailed ||
 			status == StatusCanceled || status == StatusDeadLettered
@@ -313,6 +329,8 @@ func TestIsTerminal(t *testing.T) {
 // a retry and dead-lettering. A terminal task has no budget however few
 // attempts it used.
 func TestCanRetryIsFalseOnceTerminal(t *testing.T) {
+	t.Parallel()
+
 	task := taskIn(StatusSucceeded)
 	assert.Zero(t, task.AttemptCount())
 	assert.Less(t, task.AttemptCount(), task.MaxAttempts(), "budget is nominally left")
@@ -329,6 +347,8 @@ func TestCanRetryIsFalseOnceTerminal(t *testing.T) {
 // later transaction — would write them to the outbox with the wrong
 // transaction's timing.
 func TestPullEvents(t *testing.T) {
+	t.Parallel()
+
 	now := time.Now().UTC().Truncate(time.Microsecond)
 
 	newTaskWithThreeEvents := func(t *testing.T) Task {
@@ -396,6 +416,8 @@ func TestPullEvents(t *testing.T) {
 // every read, and the relay would publish a duplicate submission for every GET.
 // Small test, large consequence.
 func TestFromPersistenceEmitsNoEvents(t *testing.T) {
+	t.Parallel()
+
 	for _, status := range allStatuses {
 		t.Run(string(status), func(t *testing.T) {
 			task := taskIn(status)
@@ -409,6 +431,8 @@ func TestFromPersistenceEmitsNoEvents(t *testing.T) {
 // without the second half, a caller could write through the returned pointer
 // and reopen a closed attempt from outside.
 func TestAttemptsCannotBeMutatedFromOutside(t *testing.T) {
+	t.Parallel()
+
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	task := taskIn(StatusRunning)
 	require.NoError(t, task.Complete(json.RawMessage(`{}`), now))
@@ -432,4 +456,42 @@ func drain(t *Task) []domain.Event {
 		events = append(events, ev)
 	}
 	return events
+}
+
+// TestSubmit_RefusesAPayloadTheStoreCannotHold covers the keyless path, which
+// never reaches a fingerprint: the aggregate has to refuse these itself.
+func TestSubmit_RefusesAPayloadTheStoreCannotHold(t *testing.T) {
+	t.Parallel()
+
+	for _, payload := range []string{`{"a":"\u0000"}`, `{"n":1e999999}`, `{"a":1,"a":2}`, `not json`, ``} {
+		t.Run(payload, func(t *testing.T) {
+			_, err := Submit(uuid.Must(uuid.NewV7()), Handler{name: "echo"}, 0,
+				json.RawMessage(payload), 1, time.Now())
+			require.ErrorIs(t, err, ErrInvalidPayload)
+		})
+	}
+}
+
+// The payload is the same kind of mutable slice as the attempts, and the
+// aggregate boundary is the same: neither the caller's slice nor the one Payload
+// hands back may be a way in.
+func TestPayloadIsNotAWritableHandle(t *testing.T) {
+	t.Parallel()
+
+	in := json.RawMessage(`{"a":1}`)
+	task, err := Submit(uuid.Must(uuid.NewV7()), Handler{name: "echo"}, 0, in, 1, time.Now())
+	require.NoError(t, err)
+
+	in[2] = 'x'
+	assert.JSONEq(t, `{"a":1}`, string(task.Payload()), "the caller's slice must not reach the aggregate")
+
+	out := task.Payload()
+	out[2] = 'x'
+	assert.JSONEq(t, `{"a":1}`, string(task.Payload()), "Payload must hand out a copy")
+
+	stored := json.RawMessage(`{"a":1}`)
+	rebuilt := FromPersistence(uuid.Must(uuid.NewV7()), StatusPending, Handler{name: "echo"}, 0,
+		stored, nil, 0, time.Now(), 1, time.Now())
+	stored[2] = 'x'
+	assert.JSONEq(t, `{"a":1}`, string(rebuilt.Payload()), "FromPersistence must copy too")
 }

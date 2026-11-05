@@ -30,37 +30,33 @@ func New(r repository.Resolver) *Repo {
 	return &Repo{resolver: r}
 }
 
-// Insert persists a new task, its attempt history, and - when a key is supplied
+// Insert persists a new task, its attempt history, and - when a claim is supplied
 // - its ledger row, in whatever transaction the Resolver hands back, so they
 // commit together. The ledger's composite PK (tenant_id, handler,
 // idempotency_key) is the durable dedup floor; tasks carries no uniqueness of
 // its own since the archive trigger would evaporate it on completion.
-func (r *Repo) Insert(ctx context.Context, t domaintasks.Task, idempotencyKey *string) error {
+func (r *Repo) Insert(ctx context.Context, t domaintasks.Task, claim *domaintasks.IdempotencyClaim) error {
 	q := queries.New(r.resolver.Resolve(ctx))
-	if _, err := q.CreateTask(ctx, toRow(t, idempotencyKey)); err != nil {
+	if err := q.CreateTask(ctx, toRow(t, claim, repository.TraceID(ctx))); err != nil {
 		return fmt.Errorf("insert task %s: %w", t.ID(), err)
 	}
 	// Empty on the submit path - a freshly-submitted task has no attempts. The
 	// loop is here so the aggregate and the row never disagree once a caller
 	// inserts a task that already has history.
 	for _, a := range toAttemptRows(t) {
-		if _, err := q.CreateAttempt(ctx, a); err != nil {
+		if err := q.CreateAttempt(ctx, a); err != nil {
 			return fmt.Errorf("insert attempt %d of task %s: %w", a.Attempt, t.ID(), err)
 		}
 	}
-	if idempotencyKey == nil {
+	if claim == nil {
 		return nil
 	}
-	fp, err := domaintasks.NewPayloadFingerprint(t.Payload())
-	if err != nil {
-		return fmt.Errorf("insert task %s: %w", t.ID(), err)
-	}
-	err = q.InsertIdempotencyKey(ctx, queries.InsertIdempotencyKeyParams{
+	err := q.InsertIdempotencyKey(ctx, queries.InsertIdempotencyKeyParams{
 		TenantID:       defaultTenantID,
 		Handler:        t.Handler().Name(),
-		IdempotencyKey: *idempotencyKey,
+		IdempotencyKey: claim.Key.String(),
 		TaskID:         t.ID(),
-		PayloadHash:    fp[:],
+		PayloadHash:    claim.Fingerprint[:],
 	})
 	if isUniqueViolation(err) {
 		return fmt.Errorf("insert task %s: %w", t.ID(), domaintasks.ErrConflict)
@@ -91,7 +87,7 @@ func (r *Repo) Get(ctx context.Context, id uuid.UUID) (domaintasks.Task, error) 
 // GetIdempotencyRecord returns what a key resolves to in the ledger: the task
 // the first submit created and the fingerprint of its payload.
 //
-// The contract, all of it pinned by TestRepo_getIdempotencyRecord:
+// The contract, pinned by TestRepo_GetIdempotencyRecord and TestFingerprintFromRow:
 //   - scoped exactly as the primary key is: defaultTenantID, handler, key;
 //   - a miss is domaintasks.ErrNotFound, through translate;
 //   - a payload_hash that is not 16 bytes is an error, never a truncated or
@@ -106,12 +102,13 @@ func (r *Repo) GetIdempotencyRecord(
 		IdempotencyKey: key.String(),
 	})
 	if err != nil {
-		return domaintasks.IdempotencyRecord{}, fmt.Errorf("get idempotency record for the key %s: %w", key.String(), translate(err))
+		return domaintasks.IdempotencyRecord{}, fmt.Errorf("get idempotency record for key %s: %w", key.String(), translate(err))
 	}
-	return domaintasks.IdempotencyRecord{
-		TaskID:      row.TaskID,
-		Fingerprint: domaintasks.PayloadFingerprint(row.PayloadHash),
-	}, nil
+	fp, err := fingerprintFromRow(row.PayloadHash)
+	if err != nil {
+		return domaintasks.IdempotencyRecord{}, fmt.Errorf("get idempotency record for key %s: %w", key.String(), err)
+	}
+	return domaintasks.IdempotencyRecord{TaskID: row.TaskID, Fingerprint: fp}, nil
 }
 
 // GetForUpdate returns the task with its attempt history, row-locked until the
@@ -174,20 +171,20 @@ func (r *Repo) PersistTransition(ctx context.Context, t domaintasks.Task, fenceE
 	return rows, nil
 }
 
-// errNotImplementedCE6 keeps the ports complete before Part C exists; the
-// fenced, ceiling-bounded SQL lands with CE6.
-var errNotImplementedCE6 = errors.New("not implemented: lands with CE6")
+// errHeartbeatNotImplemented keeps the ports complete before the worker runtime
+// exists; the fenced, ceiling-bounded SQL lands with the heartbeat work.
+var errHeartbeatNotImplemented = errors.New("not implemented: lands with worker heartbeats")
 
-// ExtendLease satisfies task.TasksRepo until CE6 lands the fenced,
-// ceiling-bounded UPDATE. It always returns errNotImplementedCE6.
+// ExtendLease satisfies task.TasksRepo until the heartbeat work lands the fenced,
+// ceiling-bounded UPDATE. It always returns errHeartbeatNotImplemented.
 func (r *Repo) ExtendLease(ctx context.Context, id uuid.UUID, until time.Time, fenceEpoch int64, ceiling time.Duration) (int64, error) {
-	return 0, errNotImplementedCE6
+	return 0, errHeartbeatNotImplemented
 }
 
-// Heartbeat satisfies task.AttemptsRepo until CE6 lands the task_attempts
-// write. It always returns errNotImplementedCE6.
+// Heartbeat satisfies task.AttemptsRepo until the heartbeat work lands the task_attempts
+// write. It always returns errHeartbeatNotImplemented.
 func (r *Repo) Heartbeat(ctx context.Context, taskID uuid.UUID, progress *float32, now time.Time) error {
-	return errNotImplementedCE6
+	return errHeartbeatNotImplemented
 }
 
 // hydrate loads a task row's attempts and rebuilds the aggregate. Two queries

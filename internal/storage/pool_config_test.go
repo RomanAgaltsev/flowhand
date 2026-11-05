@@ -1,7 +1,6 @@
 package storage_test
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -12,7 +11,7 @@ import (
 	"github.com/RomanAgaltsev/flowhand/internal/storage"
 )
 
-// testDSN is never dialled - pgxpool connects lazily and these tests only read
+// testDSN is never dialed - pgxpool connects lazily and these tests only read
 // back the resolved config. No password: there is nothing to authenticate to,
 // and gosec's G101 is right to object to one in a literal.
 const testDSN = "postgres://user@127.0.0.1:1/flowhand?sslmode=disable"
@@ -39,7 +38,7 @@ func TestNewPool_ZeroConfigKeepsPgxDefaults(t *testing.T) {
 	// set, lifetime left unset - so this isolates the field that actually broke
 	// CI rather than tripping on an invalid MaxConns first. pgxpool connects
 	// lazily, so nothing dials.
-	pool, err := storage.NewPool(context.Background(), config.DB{
+	pool, err := storage.NewPool(t.Context(), config.DB{
 		DSN:      testDSN,
 		MaxConns: 4,
 		MinConns: 1,
@@ -54,7 +53,7 @@ func TestNewPool_ZeroConfigKeepsPgxDefaults(t *testing.T) {
 // TestNewPool_ExplicitConfigWins guards the other direction: the zero-guard
 // must not swallow values the operator actually set.
 func TestNewPool_ExplicitConfigWins(t *testing.T) {
-	pool, err := storage.NewPool(context.Background(), config.DB{
+	pool, err := storage.NewPool(t.Context(), config.DB{
 		DSN:             testDSN,
 		MaxConns:        7,
 		MinConns:        3,

@@ -10,15 +10,15 @@ import (
 // without importing the repository layer.
 var ErrNotFound = errors.New("task not found")
 
-// ErrConflict is returned when an insert collides with the partial unique
-// index on idempotency_key. The service layer turns it into a replay.
+// ErrConflict is returned when an insert collides with the idempotency
+// ledger's primary key. The service layer turns it into a replay.
 var ErrConflict = errors.New("idempotency key conflict")
 
 // ErrInvalidPriority is returned when a given priority is higher than
 // MaxPriority.
 var ErrInvalidPriority = errors.New("priority out of range")
 
-// ErrInvalidIdempotencyKey is the umbrella sentinel; the three below wrap it,
+// ErrInvalidIdempotencyKey is the umbrella sentinel; the four below wrap it,
 // so errors.Is against either the umbrella or the specific reason works.
 var ErrInvalidIdempotencyKey = errors.New("invalid idempotency key")
 
@@ -34,8 +34,14 @@ var ErrIdempotencyKeyNotASCII = fmt.Errorf("%w: contains a non-ASCII byte", ErrI
 // MaxIdempotencyKeyBytes. Keys are ASCII, so bytes and runes coincide.
 var ErrIdempotencyKeyTooLong = fmt.Errorf("%w: longer than %d bytes", ErrInvalidIdempotencyKey, MaxIdempotencyKeyBytes)
 
+// ErrIdempotencyKeyNotPrintable is returned when the key holds a byte outside
+// printable ASCII (0x20-0x7E). NUL in particular cannot be stored in a
+// Postgres TEXT column at all.
+var ErrIdempotencyKeyNotPrintable = fmt.Errorf("%w: contains a non-printable byte", ErrInvalidIdempotencyKey)
+
 // ErrInvalidShardID is returned when a stored shard_id is outside the uint16
-// range the domain represents. See D8.
+// range the domain represents. The column is deliberately wider than the domain
+// type, so the read path is where a bad value is caught.
 var ErrInvalidShardID = errors.New("shard id out of range")
 
 // ErrInvalidLeaseEpoch is returned when a stored lease_epoch is negative. The
@@ -45,6 +51,12 @@ var ErrInvalidLeaseEpoch = errors.New("lease epoch out of range")
 
 // ErrEmptyHandler is returned when a handler name is the empty string.
 var ErrEmptyHandler = errors.New("empty handler name")
+
+// ErrInvalidHandlerName is returned when a handler name is not text a Postgres
+// TEXT column can hold: invalid UTF-8, or U+0000. Checked before the catalog,
+// because a permissive catalog must not be what stands between a client and a
+// 500.
+var ErrInvalidHandlerName = errors.New("invalid handler name")
 
 // ErrUnknownHandler is returned when the handler catalog does not know the
 // name. Defined here, at the consumer of the catalog port, so callers can
@@ -65,7 +77,13 @@ var ErrInvalidMaxAttempts = errors.New("max attempts must be greater than zero")
 // empty JSON object is a legitimate payload; a nil one is a caller bug.
 var ErrNilPayload = errors.New("nil payload")
 
-// ErrInvalidPayload is returned when a payload is not exactly one JSON value,
-// so it cannot be fingerprinted. Nothing on the HTTP path produces one - ogen
-// decodes the body first - so this guards the other callers of Submit.
-var ErrInvalidPayload = errors.New("payload is not valid json")
+// ErrInvalidPayload is returned when a payload is not exactly one JSON value the
+// task store can hold. The HTTP path produces it too: ogen decodes only the top
+// level of the opaque payload, so a nested duplicate name, U+0000 or an
+// out-of-range number all arrive here.
+var ErrInvalidPayload = errors.New("invalid payload")
+
+// ErrInvalidFingerprint is returned when a stored payload fingerprint is not
+// exactly PayloadFingerprint's width: corrupt data, or a row written before the
+// fingerprint was canonical. Never a fingerprint to compare against.
+var ErrInvalidFingerprint = errors.New("payload fingerprint has the wrong length")

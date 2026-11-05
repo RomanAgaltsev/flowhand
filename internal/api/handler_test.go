@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -49,7 +50,7 @@ func discardLogger() *slog.Logger {
 
 func TestCreateTask_HappyPath(t *testing.T) {
 	id := uuid.Must(uuid.NewV7())
-	created := time.Now().UTC().Truncate(time.Microsecond)
+	created := time.Now().UTC()
 	cmd := &fakeCommander{
 		task: domaintasks.FromPersistence(
 			id,
@@ -67,7 +68,7 @@ func TestCreateTask_HappyPath(t *testing.T) {
 	}
 	h := api.NewHandler(cmd, &fakeQuerier{}, discardLogger())
 
-	resp, err := h.CreateTask(context.Background(), &oas.CreateTaskRequest{
+	resp, err := h.CreateTask(t.Context(), &oas.CreateTaskRequest{
 		Handler:        "echo",
 		IdempotencyKey: oas.NewOptString("key-1"),
 	})
@@ -103,7 +104,7 @@ func TestCreateTask_AbsentKeyBecomesEmptyString(t *testing.T) {
 	}
 	h := api.NewHandler(cmd, &fakeQuerier{}, discardLogger())
 
-	_, err := h.CreateTask(context.Background(), &oas.CreateTaskRequest{Handler: "echo"})
+	_, err := h.CreateTask(t.Context(), &oas.CreateTaskRequest{Handler: "echo"})
 	require.NoError(t, err)
 
 	// "" is the service's contract for "no key"; turning it into a NULL column
@@ -135,7 +136,7 @@ func TestCreateTask_MarshalsPayload(t *testing.T) {
 		oas.CreateTaskRequestPayload{"a": []byte(`1`)},
 	))
 
-	_, err := h.CreateTask(context.Background(), req)
+	_, err := h.CreateTask(t.Context(), req)
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"a":1}`, string(cmd.got.Payload))
 }
@@ -156,7 +157,7 @@ func TestCreateTask_UnmappedStatusIs500(t *testing.T) {
 		),
 	}, &fakeQuerier{}, discardLogger())
 
-	_, err := h.CreateTask(context.Background(), &oas.CreateTaskRequest{Handler: "echo"})
+	_, err := h.CreateTask(t.Context(), &oas.CreateTaskRequest{Handler: "echo"})
 	require.ErrorContains(t, err, "quarantined")
 }
 
@@ -176,7 +177,7 @@ func TestGetTask_HappyPath(t *testing.T) {
 		discardLogger(),
 	)
 
-	resp, err := h.GetTask(context.Background(), oas.GetTaskParams{ID: id})
+	resp, err := h.GetTask(t.Context(), oas.GetTaskParams{ID: id})
 	require.NoError(t, err)
 
 	got, ok := resp.(*oas.Task)
@@ -203,7 +204,7 @@ func TestGetTask_RejectsStatusOutsideThePublishedEnum(t *testing.T) {
 		discardLogger(),
 	)
 
-	_, err := h.GetTask(context.Background(), oas.GetTaskParams{ID: uuid.Must(uuid.NewV7())})
+	_, err := h.GetTask(t.Context(), oas.GetTaskParams{ID: uuid.Must(uuid.NewV7())})
 	require.Error(t, err, "an unpublished status must not be served as a Task")
 	assert.Contains(t, err.Error(), "orphaned")
 }
@@ -211,7 +212,7 @@ func TestGetTask_RejectsStatusOutsideThePublishedEnum(t *testing.T) {
 func TestGetTask_NotFound(t *testing.T) {
 	h := api.NewHandler(&fakeCommander{}, &fakeQuerier{err: domaintasks.ErrNotFound}, discardLogger())
 
-	resp, err := h.GetTask(context.Background(), oas.GetTaskParams{ID: uuid.Must(uuid.NewV7())})
+	resp, err := h.GetTask(t.Context(), oas.GetTaskParams{ID: uuid.Must(uuid.NewV7())})
 	require.NoError(t, err)
 
 	e, ok := resp.(*oas.GetTaskNotFound)
@@ -222,7 +223,7 @@ func TestGetTask_NotFound(t *testing.T) {
 func TestCreateTask_ServiceError(t *testing.T) {
 	h := api.NewHandler(&fakeCommander{err: errors.New("boom")}, &fakeQuerier{}, discardLogger())
 
-	resp, err := h.CreateTask(context.Background(), &oas.CreateTaskRequest{Handler: "echo"})
+	resp, err := h.CreateTask(t.Context(), &oas.CreateTaskRequest{Handler: "echo"})
 	// Returning the error - not a typed 500 - lets api.ErrorHandler render the
 	// Error envelope and marks the span as failed.
 	require.ErrorContains(t, err, "submit task")
@@ -234,7 +235,7 @@ func TestGetTask_UnmappedStatusIs500(t *testing.T) {
 		ID: uuid.Must(uuid.NewV7()), Status: "quarantined",
 	}}, discardLogger())
 
-	_, err := h.GetTask(context.Background(), oas.GetTaskParams{ID: uuid.Must(uuid.NewV7())})
+	_, err := h.GetTask(t.Context(), oas.GetTaskParams{ID: uuid.Must(uuid.NewV7())})
 	require.ErrorContains(t, err, "quarantined")
 }
 
@@ -249,7 +250,7 @@ func TestCreateTask_ReplayIs200(t *testing.T) {
 		created: false,
 	}, &fakeQuerier{}, discardLogger())
 
-	resp, err := h.CreateTask(context.Background(), &oas.CreateTaskRequest{
+	resp, err := h.CreateTask(t.Context(), &oas.CreateTaskRequest{
 		Handler: "echo", IdempotencyKey: oas.NewOptString("key-1"),
 	})
 	require.NoError(t, err)
@@ -267,7 +268,7 @@ func TestCreateTask_ConflictIs409(t *testing.T) {
 		err: fmt.Errorf("submit: %w", &task.ConflictError{ExistingTaskID: existing}),
 	}, &fakeQuerier{}, discardLogger())
 
-	resp, err := h.CreateTask(context.Background(), &oas.CreateTaskRequest{
+	resp, err := h.CreateTask(t.Context(), &oas.CreateTaskRequest{
 		Handler: "echo", IdempotencyKey: oas.NewOptString("key-1"),
 	})
 	require.NoError(t, err, "a conflict is a typed response, not an error for the 500 path")
@@ -276,4 +277,40 @@ func TestCreateTask_ConflictIs409(t *testing.T) {
 	require.True(t, ok, "got %T", resp)
 	assert.Equal(t, oas.IdempotencyConflictCodeIdempotencyConflict, got.Code)
 	assert.Equal(t, existing, got.ExistingTaskID)
+}
+
+// TestCreateTask_ClientErrorsAre400 is one row per domain input sentinel. Each is
+// the caller's fault, so each is a 400 and not a 500 logged as though it were ours.
+// The wrapped forms are what Submit actually returns.
+func TestCreateTask_ClientErrorsAre400(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{"unknown handler", domaintasks.ErrUnknownHandler},
+		{"empty handler", domaintasks.ErrEmptyHandler},
+		{"invalid handler name", domaintasks.ErrInvalidHandlerName},
+		{"invalid key", domaintasks.ErrInvalidIdempotencyKey},
+		{"key not ascii", domaintasks.ErrIdempotencyKeyNotASCII},
+		{"key not printable", domaintasks.ErrIdempotencyKeyNotPrintable},
+		{"key too long", domaintasks.ErrIdempotencyKeyTooLong},
+		{"invalid payload", domaintasks.ErrInvalidPayload},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			cmd := &fakeCommander{err: fmt.Errorf("submit task: %w", tt.err)}
+			h := api.NewHandler(cmd, &fakeQuerier{}, slog.New(slog.NewTextHandler(&logs, nil)))
+
+			resp, err := h.CreateTask(t.Context(), &oas.CreateTaskRequest{Handler: "echo"})
+			require.NoError(t, err, "a returned error is a 500")
+
+			got, ok := resp.(*oas.CreateTaskBadRequest)
+			require.True(t, ok, "got %T", resp)
+			assert.Equal(t, oas.ErrorCodeInvalidRequestBody, got.Code)
+			assert.NotEmpty(t, got.Message)
+			assert.NotContains(t, got.Message, "submit task", "the wrapped chain must not reach the wire")
+			assert.Empty(t, logs.String(), "a client error is not ours to log")
+		})
+	}
 }

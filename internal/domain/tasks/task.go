@@ -1,6 +1,7 @@
 package tasks
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -71,13 +72,19 @@ func Submit(
 	if payload == nil {
 		return Task{}, ErrNilPayload
 	}
+	// Every submit, keyed or not. Only a keyed one is ever fingerprinted, so
+	// leaving this to the fingerprint would let a keyless submit carry a payload
+	// the JSONB column refuses.
+	if _, err := canonicalJSON(payload); err != nil {
+		return Task{}, err
+	}
 
 	t := Task{
 		id:          id,
 		status:      StatusPending,
 		handler:     handler,
 		priority:    priority,
-		payload:     payload,
+		payload:     bytes.Clone(payload),
 		maxAttempts: maxAttempts,
 		earliestAt:  now,
 		createdAt:   now,
@@ -98,8 +105,9 @@ func (t Task) Handler() Handler { return t.handler }
 // Priority returns tasks priority.
 func (t Task) Priority() Priority { return t.priority }
 
-// Payload returns tasks payload.
-func (t Task) Payload() json.RawMessage { return t.payload }
+// Payload returns a copy of the task's payload: the slice is the aggregate
+// boundary, the same reason Attempts clones.
+func (t Task) Payload() json.RawMessage { return bytes.Clone(t.payload) }
 
 // LeaseEpoch returns tasks leaseEpoch.
 func (t Task) LeaseEpoch() LeaseEpoch { return t.leaseEpoch }
@@ -163,7 +171,7 @@ func (t *Task) finishOpenAttempt(now time.Time, status AttemptStatus, errorClass
 }
 
 // AttemptCount is derived from the slice rather than stored. A counter field
-// would be a second source of truth, and Step 6's parity property (Started
+// would be a second source of truth, and the parity property (Started
 // events == AttemptCount) exists to catch exactly that drift.
 //
 // The clamp is unreachable — Start is only legal from pending/retry_scheduled,
@@ -184,7 +192,7 @@ func (t Task) AttemptCount() uint8 {
 // The default arm is what makes this switch exhaustive: the `exhaustive`
 // linter runs with default-signifies-exhaustive, so it will not flag a new
 // status here. Adding a *terminal* status means editing this switch by hand,
-// and schema.md's archive trigger has to agree with it.
+// and the archive trigger (trg_tasks_archive) has to agree with it.
 func (t Task) IsTerminal() bool {
 	switch t.status {
 	case StatusSucceeded, StatusFailed, StatusCanceled, StatusDeadLettered:
@@ -207,9 +215,9 @@ func (t Task) CanRetry() bool {
 // Start opens an attempt and moves the task to running. Legal from pending and
 // from retry_scheduled — the two states a scheduler dispatches from.
 //
-// leaseUntil is accepted but not stored: the lease lives on the row, and CE6 is
-// the task that gives the aggregate a lease field. Taking it now fixes the
-// signature so CE6 does not have to change every call site.
+// leaseUntil is accepted but not stored: the lease lives on the row until the
+// heartbeat work gives the aggregate a lease field. Taking it now fixes the
+// signature so that work does not have to change every call site.
 func (t *Task) Start(attemptID uuid.UUID, workerID string, _ /* leaseUntil */, now time.Time) error {
 	if err := t.ensure("start", StatusPending, StatusRetryScheduled); err != nil {
 		return err
@@ -241,7 +249,7 @@ func (t *Task) Complete(result json.RawMessage, now time.Time) error {
 // Fail moves a running task to the TERMINAL failed status. This is the
 // non-retryable path only: a transient failure calls ScheduleRetry, which never
 // passes through `failed`, because the archive trigger treats it as terminal
-// and would move the row out mid-retry (schema.md, 2026-07-04 review F9).
+// and would move the row out mid-retry.
 func (t *Task) Fail(errorClass, errorMessage string, now time.Time) error {
 	if err := t.ensure("fail", StatusRunning); err != nil {
 		return err

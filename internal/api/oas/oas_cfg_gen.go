@@ -18,7 +18,7 @@ import (
 )
 
 var regexMap = map[string]ogenregex.Regexp{
-	"^[\\x00-\\x7F]+$": ogenregex.MustCompile("^[\\x00-\\x7F]+$"),
+	"^[\\x20-\\x7E]+$": ogenregex.MustCompile("^[\\x20-\\x7E]+$"),
 }
 var (
 	// Allocate option closure once.

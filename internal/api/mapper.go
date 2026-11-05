@@ -46,7 +46,7 @@ func toOASTask(t domaintasks.Task) (oas.Task, error) {
 	if err != nil {
 		return oas.Task{}, err
 	}
-	return oas.Task{ID: t.ID(), Status: status, CreatedAt: t.CreatedAt()}, nil
+	return oas.Task{ID: t.ID(), Status: status, CreatedAt: t.CreatedAt().UTC()}, nil
 }
 
 // toOASTaskView maps the read-side projection. TaskView.Status is a plain
@@ -57,5 +57,5 @@ func toOASTaskView(v task.TaskView) (oas.Task, error) {
 	if err != nil {
 		return oas.Task{}, err
 	}
-	return oas.Task{ID: v.ID, Status: status, CreatedAt: v.CreatedAt}, nil
+	return oas.Task{ID: v.ID, Status: status, CreatedAt: v.CreatedAt.UTC()}, nil
 }

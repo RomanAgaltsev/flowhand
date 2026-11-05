@@ -1,7 +1,6 @@
 package task
 
 import (
-	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -37,14 +36,14 @@ func taskIn(t *testing.T, status domaintasks.Status) domaintasks.Task {
 
 func TestQuerierGet_MapsToView(t *testing.T) {
 	id := uuid.Must(uuid.NewV7())
-	created := time.Now().UTC().Truncate(time.Microsecond)
+	created := time.Now().UTC()
 	stored := domaintasks.FromPersistence(id, domaintasks.StatusSucceeded,
 		domaintasks.HandlerFromPersistence("echo"), 0,
 		json.RawMessage(`{"a":1}`), nil, 0, created, 1, created)
 
 	q := NewQuerier(&fakeTasksRepo{rec: &recorder{}, stored: stored}, newTestCache(t), time.Minute)
 
-	got, err := q.Get(context.Background(), id)
+	got, err := q.Get(t.Context(), id)
 	require.NoError(t, err)
 
 	assert.Equal(t, id, got.ID)
@@ -57,7 +56,7 @@ func TestQuerierGet_PropagatesNotFound(t *testing.T) {
 	q := NewQuerier(&fakeTasksRepo{rec: &recorder{}, storedErr: domaintasks.ErrNotFound},
 		newTestCache(t), time.Minute)
 
-	_, err := q.Get(context.Background(), uuid.Must(uuid.NewV7()))
+	_, err := q.Get(t.Context(), uuid.Must(uuid.NewV7()))
 	require.ErrorIs(t, err, domaintasks.ErrNotFound)
 }
 
@@ -65,7 +64,7 @@ func TestQuerierGet_TerminalIsCached(t *testing.T) {
 	rec := &recorder{}
 	tt := taskIn(t, domaintasks.StatusSucceeded)
 	q := NewQuerier(&fakeTasksRepo{rec: rec, stored: tt}, newTestCache(t), time.Minute)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	first, err := q.Get(ctx, tt.ID())
 	require.NoError(t, err)
@@ -80,11 +79,11 @@ func TestQuerierGet_TerminalIsCached(t *testing.T) {
 func TestQuerierGet_NonTerminalIsNeverCached(t *testing.T) {
 	// The regression net for this whole task. Under the retired
 	// write-side-invalidation design this test fails immediately - and it
-	// fails BEFORE CE4 exists to notice, which is the point of writing it now.
+	// fails BEFORE a result writer exists to notice, which is the point of writing it now.
 	rec := &recorder{}
 	tt := taskIn(t, domaintasks.StatusRunning)
 	q := NewQuerier(&fakeTasksRepo{rec: rec, stored: tt}, newTestCache(t), time.Minute)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	_, err := q.Get(ctx, tt.ID())
 	require.NoError(t, err)
@@ -105,7 +104,7 @@ func TestQuerierGet_CachedEntryExpires(t *testing.T) {
 	clock := func() time.Time { return now }
 	lru := &lruCache{lru: cache.NewLRU[uuid.UUID, TaskView](16, clock)}
 	q := NewQuerier(&fakeTasksRepo{rec: rec, stored: tt}, lru, time.Minute)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	_, err := q.Get(ctx, tt.ID())
 	require.NoError(t, err)
@@ -124,7 +123,7 @@ func TestQuerierGet_MissIsNotCached(t *testing.T) {
 	rec := &recorder{}
 	q := NewQuerier(&fakeTasksRepo{rec: rec, storedErr: domaintasks.ErrNotFound},
 		newTestCache(t), time.Minute)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	id := uuid.Must(uuid.NewV7())
 	_, err := q.Get(ctx, id)
@@ -136,7 +135,7 @@ func TestQuerierGet_MissIsNotCached(t *testing.T) {
 }
 
 func TestNewLRUCache_RejectsNonPositiveCapacity(t *testing.T) {
-	// G2 returns a nil LRU for capacity <= 0, which would not fail until the
+	// NewLRU returns nil for capacity <= 0, which would not fail until the
 	// first Get - under traffic. The constructor turns that into a startup error.
 	for _, capacity := range []int{0, -1} {
 		_, err := NewLRUCache(capacity)

@@ -20,8 +20,14 @@ linters:
     - depguard
     - exhaustive
     - modernize
+    - misspell
 
   settings:
+    misspell:
+      locale: US
+      # task.cancelled.v1 is a published event name, whatever US spelling says.
+      ignore-rules:
+        - cancelled
     errcheck:
       check-blank: true
     revive:
@@ -74,6 +80,7 @@ linters:
           files:
             - "!**/internal/storage/**"
             - "!**/internal/repository/**"
+            - "!**/internal/testutil/pgtest/**"
           deny:
             - pkg: "github.com/jackc/pgx/v5"
               desc: "pgx may only be imported by storage and repository layers"

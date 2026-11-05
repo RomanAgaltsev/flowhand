@@ -19,7 +19,7 @@ import (
 // long generated slice to get there.
 const propMaxAttempts uint8 = 3
 
-// model is an independent reimplementation of the Step 4 transition table —
+// model is an independent reimplementation of the transition table —
 // deliberately NOT the aggregate. If the property derived its expectations from
 // Task's own guards it would prove only that the code agrees with itself.
 type model struct {
@@ -28,7 +28,7 @@ type model struct {
 }
 
 // allows reports whether the table permits method from the model's current
-// state, exactly as the plan's table specifies it.
+// state, exactly as the transition table specifies it.
 func (m model) allows(method string) bool {
 	if _, ok := legalTransitions[method][m.status]; !ok {
 		return false
@@ -59,7 +59,7 @@ func methodSeq() gopter.Gen {
 
 func propParameters() *gopter.Properties {
 	params := gopter.DefaultTestParameters()
-	params.MinSuccessfulTests = 10_000
+	params.MinSuccessfulTests = propertyCases()
 	return gopter.NewProperties(params)
 }
 
@@ -88,6 +88,8 @@ func newPropTask(t *testing.T, now time.Time) Task {
 // TestAggregateProperties runs the four invariants over sequences no one would
 // have written by hand.
 func TestAggregateProperties(t *testing.T) {
+	t.Parallel()
+
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	props := propParameters()
 
@@ -157,7 +159,7 @@ func TestAggregateProperties(t *testing.T) {
 	// 3. Cancel idempotence. A repeated terminal call is a clean refusal, not a
 	//    second event — otherwise every duplicate cancellation request would
 	//    publish another task.cancelled.v1.
-	props.Property("cancelling a cancelled task is a no-op", prop.ForAll(
+	props.Property("canceling a cancelled task is a no-op", prop.ForAll(
 		func(methods []string) bool {
 			task := newPropTask(t, now)
 			applyAll(&task, methods, now)

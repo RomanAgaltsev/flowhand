@@ -1,7 +1,9 @@
 package tasks
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"math"
 	"strconv"
 	"testing"
@@ -31,6 +33,8 @@ func submitted(t *testing.T, id uuid.UUID, payload json.RawMessage, now time.Tim
 }
 
 func TestToDomain(t *testing.T) {
+	t.Parallel()
+
 	id := uuid.Must(uuid.NewV7())
 	key := "idem-1"
 	createdAt := time.Now().UTC().Truncate(time.Microsecond)
@@ -61,46 +65,58 @@ func TestToDomain(t *testing.T) {
 }
 
 func TestToRow(t *testing.T) {
-	id := uuid.Must(uuid.NewV7())
-	key := "idem-1"
-	task := submitted(t, id, json.RawMessage(`{"msg":"hi"}`), time.Now())
+	t.Parallel()
 
-	params := toRow(task, &key)
+	id := uuid.Must(uuid.NewV7())
+	key, err := domaintasks.NewIdempotencyKey("idem-1")
+	require.NoError(t, err)
+	createdAt := time.Now()
+	task := submitted(t, id, json.RawMessage(`{"msg":"hi"}`), createdAt)
+	traceID := "trace-1"
+
+	params := toRow(task, &domaintasks.IdempotencyClaim{Key: key}, &traceID)
 
 	assert.Equal(t, id, params.ID)
-	assert.Equal(t, &key, params.IdempotencyKey)
+	require.NotNil(t, params.IdempotencyKey)
+	assert.Equal(t, "idem-1", *params.IdempotencyKey)
+	assert.Equal(t, string(domaintasks.StatusPending), params.Status)
+	assert.True(t, createdAt.Equal(params.CreatedAt))
+	assert.Equal(t, &traceID, params.TraceID)
 	assert.Equal(t, "echo", params.Handler)
 	assert.Equal(t, []byte(`{"msg":"hi"}`), params.Payload)
-	// Before D2 these three were hardcoded in toRow because Task had nowhere
-	// to keep them. Asserting them is what keeps them from drifting back.
+	// These three come from the aggregate; asserting them is what keeps a
+	// hardcoded value from drifting back in.
 	assert.Equal(t, int16(3), params.Priority)
 	assert.Equal(t, int32(5), params.MaxAttempts)
 	assert.Equal(t, int32(0), params.Attempt)
 }
 
 func TestToRowWithoutIdempotencyKey(t *testing.T) {
+	t.Parallel()
+
 	task := submitted(t, uuid.Must(uuid.NewV7()), json.RawMessage(`{}`), time.Now())
 
-	params := toRow(task, nil)
+	params := toRow(task, nil, nil)
 
 	assert.Nil(t, params.IdempotencyKey)
 }
 
 func TestMapperRoundTrip(t *testing.T) {
+	t.Parallel()
+
 	id := uuid.Must(uuid.NewV7())
 	createdAt := time.Now().UTC().Truncate(time.Microsecond)
 	want := submitted(t, id, json.RawMessage(`{"msg":"hi"}`), createdAt)
 
-	params := toRow(want, nil)
+	params := toRow(want, nil, nil)
 
-	// Stands in for the RETURNING clause: the INSERT supplies id, payload and
-	// handler; Postgres fills status and created_at from the 00001 defaults.
+	// Stands in for reading the row back.
 	row := queries.Task{
 		ID:             params.ID,
 		IdempotencyKey: params.IdempotencyKey,
 		Payload:        params.Payload,
-		Status:         string(domaintasks.StatusPending),
-		CreatedAt:      createdAt,
+		Status:         params.Status,
+		CreatedAt:      params.CreatedAt,
 		EarliestAt:     params.EarliestAt,
 		Handler:        params.Handler,
 		Priority:       params.Priority,
@@ -120,10 +136,12 @@ func TestMapperRoundTrip(t *testing.T) {
 	assert.True(t, want.EarliestAt().Equal(got.EarliestAt()))
 }
 
-// Attempts are the half of the aggregate D2 added, and the type system will not
+// Attempts are half of the aggregate, and the type system will not
 // catch a mapper that silently drops them. Two attempts, because one closed and
 // one open is the shape that exercises both nullable-time branches.
 func TestMapperRoundTripCarriesAttempts(t *testing.T) {
+	t.Parallel()
+
 	id := uuid.Must(uuid.NewV7())
 	now := time.Now().UTC().Truncate(time.Microsecond)
 
@@ -158,7 +176,7 @@ func TestMapperRoundTripCarriesAttempts(t *testing.T) {
 		})
 	}
 
-	params := toRow(task, nil)
+	params := toRow(task, nil, nil)
 	got, err := toDomain(queries.Task{
 		ID: params.ID, Payload: params.Payload, Status: string(task.Status()),
 		CreatedAt: now, EarliestAt: params.EarliestAt, Handler: params.Handler,
@@ -183,7 +201,7 @@ func TestMapperRoundTripCarriesAttempts(t *testing.T) {
 }
 
 // A row can hold a value the domain rejects — written before the CHECK
-// existed, or by a later migration. Step 4's contract: the mapper reports
+// existed, or by a later migration. The contract: the mapper reports
 // corrupt data as an error instead of letting it become a panic three layers
 // up.
 //
@@ -191,6 +209,8 @@ func TestMapperRoundTripCarriesAttempts(t *testing.T) {
 // them to 0 and 0, which sails through NewPriority as an ordinary priority. A
 // table of 200/-1 alone passes against that bug and proves nothing.
 func TestToDomainRejectsCorruptPriority(t *testing.T) {
+	t.Parallel()
+
 	for _, priority := range []int16{200, -1, 256, 512, 32767} {
 		t.Run(strconv.Itoa(int(priority)), func(t *testing.T) {
 			row := validRow()
@@ -203,9 +223,11 @@ func TestToDomainRejectsCorruptPriority(t *testing.T) {
 	}
 }
 
-// The column is INT and the domain is uint16 (D8), so the read path is the only
+// The column is INT and the domain is uint16, so the read path is the only
 // thing standing between a wider stored value and a silent truncation.
 func TestToDomainRejectsCorruptShardID(t *testing.T) {
+	t.Parallel()
+
 	for _, shard := range []int32{-1, 65536, math.MaxInt32} {
 		t.Run(strconv.Itoa(int(shard)), func(t *testing.T) {
 			row := validRow()
@@ -222,6 +244,8 @@ func TestToDomainRejectsCorruptShardID(t *testing.T) {
 // value converted straight to uint64 becomes an enormous epoch, against which
 // every live lease would compare stale — so it is rejected, not wrapped.
 func TestToDomainRejectsNegativeLeaseEpoch(t *testing.T) {
+	t.Parallel()
+
 	row := validRow()
 	epoch := int64(-1)
 	row.LeaseEpoch = &epoch
@@ -235,6 +259,8 @@ func TestToDomainRejectsNegativeLeaseEpoch(t *testing.T) {
 // The type system will not catch a mapper that drops or truncates a field.
 
 func TestPriorityRoundTripsThroughTheRow(t *testing.T) {
+	t.Parallel()
+
 	for p := uint8(0); p <= uint8(domaintasks.MaxPriority); p++ {
 		got, err := priorityFromRow(int16(p))
 		require.NoError(t, err)
@@ -243,8 +269,10 @@ func TestPriorityRoundTripsThroughTheRow(t *testing.T) {
 }
 
 func TestShardIDRoundTripsThroughTheRow(t *testing.T) {
+	t.Parallel()
+
 	// 32768 is the smallint trap: it fits uint16 and the INT column, but not
-	// the signed int16 that S0's notes once called for.
+	// a signed int16 would have.
 	for _, s := range []int32{0, 1, 32767, 32768, 65535} {
 		got, err := shardIDFromRow(s)
 		require.NoError(t, err)
@@ -257,6 +285,8 @@ func TestShardIDRoundTripsThroughTheRow(t *testing.T) {
 }
 
 func TestLeaseEpochRoundTripsThroughTheRow(t *testing.T) {
+	t.Parallel()
+
 	// NULL means never dispatched. Zero is the right absence value: IsStaleVs
 	// treats it as older than every stamped epoch, so an unleased row can never
 	// fence out a live worker.
@@ -286,4 +316,23 @@ func validRow() queries.Task {
 		ShardID:     0,
 		MaxAttempts: 1,
 	}
+}
+
+// TestFingerprintFromRow pins the guard the bare conversion lacks: it panics below
+// 16 bytes and silently keeps a prefix above it.
+func TestFingerprintFromRow(t *testing.T) {
+	t.Parallel()
+
+	for _, n := range []int{0, 8, 15, 17, 32} {
+		t.Run(fmt.Sprintf("%d bytes", n), func(t *testing.T) {
+			_, err := fingerprintFromRow(make([]byte, n))
+			require.ErrorIs(t, err, domaintasks.ErrInvalidFingerprint)
+		})
+	}
+	t.Run("16 bytes", func(t *testing.T) {
+		b := bytes.Repeat([]byte{0xAB}, 16)
+		fp, err := fingerprintFromRow(b)
+		require.NoError(t, err)
+		assert.Equal(t, b, fp[:])
+	})
 }

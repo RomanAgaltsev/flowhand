@@ -16,6 +16,7 @@ import (
 	repotasks "github.com/RomanAgaltsev/flowhand/internal/repository/tasks"
 	"github.com/RomanAgaltsev/flowhand/internal/service/task"
 	"github.com/RomanAgaltsev/flowhand/internal/storage/txmgr"
+	"github.com/RomanAgaltsev/flowhand/internal/testutil/pgtest"
 )
 
 // countingRepo counts reads that reach the repository, so the test can tell a
@@ -33,14 +34,14 @@ func (r *countingRepo) Get(ctx context.Context, id uuid.UUID) (domaintasks.Task,
 
 // TestSchedulerWriteIsVisible is the whole task in one test: a writer that
 // holds no cache reference - which is what the scheduler is - moves a task to a
-// terminal state, and the next GET sees it. The direct UPDATE stands in for
-// CE4, so this runs before CE4 exists.
+// terminal state, and the next GET sees it. The direct UPDATE stands in for the
+// result writer.
 //
-// It also exercises schema.md's read rule end to end: the UPDATE fires the
+// It also exercises the read rule end to end: the UPDATE fires the
 // archive trigger, so the terminal read is answered from tasks_archive.
 func TestSchedulerWriteIsVisible(t *testing.T) {
-	pool := startPostgresWithMigrations(t)
-	ctx := context.Background()
+	pool := pgtest.Postgres(t)
+	ctx := t.Context()
 
 	repo := &countingRepo{TasksRepo: repotasks.New(txmgr.New(pool))}
 	lru, err := task.NewLRUCache(16)

@@ -1,14 +1,15 @@
--- name: CreateTask :one
+-- name: CreateTask :exec
+-- Every value comes from the aggregate, created_at and status included: the
+-- response to a submit and a later read of the same row must agree.
 INSERT INTO tasks (
-    id, idempotency_key, payload, handler,
+    id, idempotency_key, payload, status, handler,
     tenant_id, priority, earliest_at, attempt, max_attempts,
-    shard_id, cancel_requested, updated_at
+    shard_id, cancel_requested, created_at, updated_at, trace_id
 ) VALUES (
-    $1, $2, $3, $4,
-    $5, $6, $7, $8, $9,
-    $10, $11, $12
-)
-RETURNING *;
+    $1, $2, $3, $4, $5,
+    $6, $7, $8, $9, $10,
+    $11, $12, $13, $14, $15
+);
 
 -- name: GetTaskByID :one
 SELECT * FROM tasks WHERE id = $1;
@@ -20,9 +21,9 @@ SELECT * FROM tasks WHERE id = $1 FOR UPDATE;
 
 -- name: UpdateTaskStatus :execrows
 -- The fenced status write. :execrows is load-bearing: the row count IS the
--- fence result - 0 means the stamped lease_eposh no longer matches, ownership
+-- fence result - 0 means the stamped lease_epoch no longer matches, ownership
 -- moved and the caller must abort without emitting events.
--- lease_epoch in NULLable (never dispatched). NULL never matches, so an
+-- lease_epoch is NULLable (never dispatched). NULL never matches, so an
 -- unleased row can never be transitioned through this query - by design.
 -- A terminal status here fires trg_tasks_archive, which moves the row out of
 -- tasks within this same statement.
@@ -40,21 +41,21 @@ VALUES ($1, $2, $3, $4, $5);
 SELECT task_id, payload_hash FROM idempotency_keys
 WHERE tenant_id = $1 AND handler = $2 AND idempotency_key = $3;
 
--- name: CreateAttempt :one
+-- name: CreateAttempt :exec
 INSERT INTO task_attempts (
     id, task_id, attempt, worker_id, status,
     started_at, finished_at, last_heartbeat, error_class, error_message
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7, $8, $9, $10
-)
-RETURNING *;
+);
 
 -- name: UpsertAttempt :exec
 -- The attempt row, written by PersistTransition: INSERT when the transition
 -- opened the attempt (dispatch), UPDATE when it closed it (result).
--- On conflict only the lifecycle columns are touched: started_at, worker_id,
--- last_heartbeat and progress_pct belong to dispatch and heartbeats.
+-- On conflict the close writes status, finished_at, error_class and
+-- error_message. It deliberately leaves started_at, worker_id, last_heartbeat,
+-- progress_pct and error_stack alone: those belong to dispatch and heartbeats.
 INSERT INTO task_attempts (
     id, task_id, attempt, worker_id, status,
     started_at, finished_at, last_heartbeat, progress_pct,
@@ -64,8 +65,7 @@ ON CONFLICT (id) DO UPDATE SET
     status        = EXCLUDED.status,
     finished_at   = EXCLUDED.finished_at,
     error_class   = EXCLUDED.error_class,
-    error_message = EXCLUDED.error_message,
-    error_stack   = EXCLUDED.error_stack;
+    error_message = EXCLUDED.error_message;
 
 -- name: ListTaskAttempts :many
 -- Ordered by attempt so the aggregate rebuilds its history in the order it
@@ -83,5 +83,6 @@ VALUES ($1, $2, $3, $4, $5, $6);
 -- name: GetArchivedTaskByID :one
 -- The read fallback for a task that has reached a terminal status: the archive
 -- trigger moves the row here in the same statement. Every partition's (id, finished_at)
--- primary key leads with id.
-SELECT * FROM tasks_archive WHERE id = $1;
+-- primary key leads with id. id alone is not unique across partitions, so the
+-- newest row wins: a future replay of a dead-lettered id must not read an old one.
+SELECT * FROM tasks_archive WHERE id = $1 ORDER BY finished_at DESC LIMIT 1;

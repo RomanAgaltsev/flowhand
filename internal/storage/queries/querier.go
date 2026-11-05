@@ -16,11 +16,14 @@ type Querier interface {
 	// sent/created_at take their column defaults; envelope_ver comes from
 	// domain.EnvelopeVersion on the Go side (the column is the one source).
 	AppendOutboxBatch(ctx context.Context, arg []AppendOutboxBatchParams) *AppendOutboxBatchBatchResults
-	CreateAttempt(ctx context.Context, arg CreateAttemptParams) (TaskAttempt, error)
-	CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error)
+	CreateAttempt(ctx context.Context, arg CreateAttemptParams) error
+	// Every value comes from the aggregate, created_at and status included: the
+	// response to a submit and a later read of the same row must agree.
+	CreateTask(ctx context.Context, arg CreateTaskParams) error
 	// The read fallback for a task that has reached a terminal status: the archive
 	// trigger moves the row here in the same statement. Every partition's (id, finished_at)
-	// primary key leads with id.
+	// primary key leads with id. id alone is not unique across partitions, so the
+	// newest row wins: a future replay of a dead-lettered id must not read an old one.
 	GetArchivedTaskByID(ctx context.Context, id uuid.UUID) (TasksArchive, error)
 	// The ledger replay: what a key resolves to once its insert has collided.
 	// Keyed by the full primary key, so the read is scoped exactly as the gate is.
@@ -34,17 +37,18 @@ type Querier interface {
 	// happened; Task.finishOpenAttempt only ever looks at the last element.
 	ListTaskAttempts(ctx context.Context, taskID uuid.UUID) ([]TaskAttempt, error)
 	// The fenced status write. :execrows is load-bearing: the row count IS the
-	// fence result - 0 means the stamped lease_eposh no longer matches, ownership
+	// fence result - 0 means the stamped lease_epoch no longer matches, ownership
 	// moved and the caller must abort without emitting events.
-	// lease_epoch in NULLable (never dispatched). NULL never matches, so an
+	// lease_epoch is NULLable (never dispatched). NULL never matches, so an
 	// unleased row can never be transitioned through this query - by design.
 	// A terminal status here fires trg_tasks_archive, which moves the row out of
 	// tasks within this same statement.
 	UpdateTaskStatus(ctx context.Context, arg UpdateTaskStatusParams) (int64, error)
 	// The attempt row, written by PersistTransition: INSERT when the transition
 	// opened the attempt (dispatch), UPDATE when it closed it (result).
-	// On conflict only the lifecycle columns are touched: started_at, worker_id,
-	// last_heartbeat and progress_pct belong to dispatch and heartbeats.
+	// On conflict the close writes status, finished_at, error_class and
+	// error_message. It deliberately leaves started_at, worker_id, last_heartbeat,
+	// progress_pct and error_stack alone: those belong to dispatch and heartbeats.
 	UpsertAttempt(ctx context.Context, arg UpsertAttemptParams) error
 }
 

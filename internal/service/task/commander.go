@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -15,22 +16,21 @@ import (
 
 // Submission defaults. Neither value is on the wire yet: CreateTaskRequest
 // carries only handler, payload and idempotency_key. They live here rather than
-// in the mapper - where max_attempts was hardcoded before D2 - because choosing
-// a submission's budget is a write-side decision, and the per-handler spec that
-// will supply them lands with the worker runtime.
+// in the mapper because choosing a submission's budget is a write-side decision,
+// and the per-handler spec that will supply them lands with the worker runtime.
 const (
 	// defaultPriority is the middle of nothing in particular: every task is
 	// equal until a caller can say otherwise. Higher runs sooner.
 	defaultPriority domaintasks.Priority = 0
 
-	// defaultMaxAttempts is schema.md's per-HandlerSpec default.
+	// defaultMaxAttempts is the attempt budget a handler gets unless its spec
+	// says otherwise.
 	defaultMaxAttempts uint8 = 25
 )
 
 // SubmitCommand is the write-side input for submitting a task: what the caller
 // asked for, stripped of transport concerns. An empty IdempotencyKey means "no
-// key" - the Commander turns that into a NULL column so the partial unique
-// index ignores it.
+// key": the Commander writes no ledger row for it.
 type SubmitCommand struct {
 	Handler        string
 	Payload        json.RawMessage
@@ -46,12 +46,13 @@ type Commander struct {
 	tx      TxRunner
 	idemp   IdempotencyStore
 	catalog domaintasks.HandlerCatalog
+	log     *slog.Logger
 	now     func() time.Time
 	newID   func() (uuid.UUID, error)
 }
 
 // NewCommander wires the write side over its persistence ports, with the real
-// clock and a UUIDv7 generator.
+// clock and a UUIDv7 generator. A nil log means slog.Default.
 //
 // The catalog is what turns a handler STRING from the wire into a domain
 // Handler. The domain declares that interface and the composition root supplies
@@ -62,13 +63,18 @@ func NewCommander(
 	tx TxRunner,
 	idemp IdempotencyStore,
 	catalog domaintasks.HandlerCatalog,
+	log *slog.Logger,
 ) *Commander {
+	if log == nil {
+		log = slog.Default()
+	}
 	return &Commander{
 		tasks:   tasks,
 		outbox:  outbox,
 		tx:      tx,
 		idemp:   idemp,
 		catalog: catalog,
+		log:     log,
 		now:     time.Now,
 		newID:   uuid.NewV7,
 	}
@@ -91,22 +97,38 @@ func (e *ConflictError) Error() string {
 
 func (e *ConflictError) Unwrap() error { return ErrIdempotencyConflict }
 
-// fastPath is BEFORE any id is minted and before the transaction. A hit whose
-// fingerprint matches returns the stored task; a hit whose fingerprint differs
-// is a *ConflictError - decided without calling Get, because the answer does
-// not need the task. Either way no transaction opens. A miss, a Lookup error
-// and a hit that points at a task Get cannot find all return (zero, false,
-// nil): let the ledger decide. A stale cache must never fail a submit.
+// fastPath runs BEFORE any id is minted and before the transaction. A hit whose
+// fingerprint matches returns the stored task and no transaction opens.
+//
+// Only the ledger may refuse a submit, so a hit whose fingerprint differs is
+// confirmed with one primary-key read. The ledger agreeing with the cache is a
+// *ConflictError, decided without calling Get because the answer does not need
+// the task. The ledger agreeing with this submit means the cache was stale: it
+// is re-warmed and the submit replays.
+//
+// A miss, a Lookup error, a failed ledger read and a hit that points at a task
+// Get cannot find all return (zero, false, nil): let the transaction decide. A
+// stale cache must never fail a submit.
 func (c *Commander) fastPath(
-	ctx context.Context, handler domaintasks.Handler, key domaintasks.IdempotencyKey, fp domaintasks.PayloadFingerprint,
+	ctx context.Context, handler domaintasks.Handler, claim domaintasks.IdempotencyClaim,
 ) (domaintasks.Task, bool, error) {
-	rec, ok, err := c.idemp.Lookup(ctx, handler, key)
+	rec, ok, err := c.idemp.Lookup(ctx, handler, claim.Key)
 	if err != nil || !ok {
 		return domaintasks.Task{}, false, nil //nolint:nilerr // fail-through is the contract
 	}
 
-	if fp != rec.Fingerprint {
-		return domaintasks.Task{}, false, &ConflictError{ExistingTaskID: rec.TaskID}
+	if claim.Fingerprint != rec.Fingerprint {
+		ledger, err := c.tasks.GetIdempotencyRecord(ctx, handler, claim.Key)
+		if err != nil {
+			// A miss means the ledger never saw the key: the cache outlived it, and
+			// this submit creates. Any other failure is the transaction's to report.
+			return domaintasks.Task{}, false, nil //nolint:nilerr // fail-through is the contract
+		}
+		if claim.Fingerprint != ledger.Fingerprint {
+			return domaintasks.Task{}, false, &ConflictError{ExistingTaskID: ledger.TaskID}
+		}
+		rec = ledger
+		c.warmCache(ctx, handler, claim.Key, ledger)
 	}
 
 	t, err := c.tasks.Get(ctx, rec.TaskID)
@@ -128,14 +150,14 @@ func (c *Commander) fastPath(
 // to the archive), warmCache, return it. Either read failing is an error
 // wrapped as "replay idempotent task: ..." - never a zero Task.
 func (c *Commander) replay(
-	ctx context.Context, handler domaintasks.Handler, key domaintasks.IdempotencyKey, fp domaintasks.PayloadFingerprint,
+	ctx context.Context, handler domaintasks.Handler, claim domaintasks.IdempotencyClaim,
 ) (domaintasks.Task, error) {
-	rec, err := c.tasks.GetIdempotencyRecord(ctx, handler, key)
+	rec, err := c.tasks.GetIdempotencyRecord(ctx, handler, claim.Key)
 	if err != nil {
 		return domaintasks.Task{}, fmt.Errorf("replay idempotent task: %w", err)
 	}
 
-	if fp != rec.Fingerprint {
+	if claim.Fingerprint != rec.Fingerprint {
 		return domaintasks.Task{}, &ConflictError{ExistingTaskID: rec.TaskID}
 	}
 
@@ -144,7 +166,7 @@ func (c *Commander) replay(
 		return domaintasks.Task{}, fmt.Errorf("replay idempotent task: %w", err)
 	}
 
-	c.warmCache(ctx, handler, key, rec)
+	c.warmCache(ctx, handler, claim.Key, rec)
 
 	return t, nil
 }
@@ -152,29 +174,21 @@ func (c *Commander) replay(
 // warmCache is the post-commit warm, and the post-replay re-warm. Returns
 // nothing, because the task is committed and the client's submit has already
 // succeeded - there is no one left to report an error to. A Record error is
-// logged with slog.WarnContext and dropped.
+// logged and dropped.
 //
-// slog.Default rather than an injected logger: the Commander's shape is fixed
-// by the design of record, and the composition root installs the obs handler
-// as the default.
+// WithoutCancel because the submit has committed: a client that disconnects now
+// must not cost the task its cache entry. The store bounds the call itself.
 func (c *Commander) warmCache(
 	ctx context.Context, handler domaintasks.Handler, key domaintasks.IdempotencyKey, rec domaintasks.IdempotencyRecord,
 ) {
-	// key, err := domaintasks.NewIdempotencyKey(rawKey)
-	// if err != nil {
-	// 	// Submit does not validate the key, so the ledger can hold one the domain
-	// 	// rejects. Recording it under a zero key would alias every such submit.
-	// 	slog.WarnContext(ctx, "idempotency cache warm skipped: invalid key",
-	// 		"task_id", taskID, "err", err)
-	// 	return
-	// }
+	ctx = context.WithoutCancel(ctx)
 	if err := c.idemp.Record(ctx, handler, key, rec); err != nil {
 		// Soft: the next duplicate misses the cache, pays one database round
 		// trip and re-warms. Never retried, never returned.
-		slog.WarnContext(ctx, "idempotency cache warm failed",
-			"handler", handler,
-			"key", key,
-			"rec", rec,
+		c.log.WarnContext(ctx, "idempotency cache warm failed",
+			"handler", handler.Name(),
+			"idempotency_key", key,
+			"task_id", rec.TaskID,
 			"err", err)
 	}
 }
@@ -187,13 +201,12 @@ func (c *Commander) warmCache(
 // The order is the contract - commander_test.go asserts it call by call:
 //  1. NewHandler: an unknown handler is a bad request, and the handler is half
 //     of the idempotency scope, so it comes before anything keyed.
-//  2. Keyed submits only: NewIdempotencyKey (D24's backstop for callers that
-//     are not the HTTP API), then NewPayloadFingerprint, then fastPath.
-//  3. Mint the id, read the clock, domaintasks.Submit - C1's code, unchanged.
-//  4. The transaction: Insert, then Append each pulled event - unchanged.
+//  2. Keyed submits only: NewIdempotencyKey (the backstop for callers that are
+//     not the HTTP API), then NewPayloadFingerprint, then fastPath.
+//  3. Mint the id, read the clock, domaintasks.Submit.
+//  4. The transaction: Insert, then Append every pulled event in one batch.
 //  5. Commit -> warmCache with the new task's record, created=true. Ledger
-//     ErrConflict with a key -> replay, created=false. ErrConflict without a
-//     key -> an error, as in C1. Anything else -> an error.
+//     ErrConflict -> replay, created=false. Anything else -> an error.
 //
 // Returns the aggregate rather than a bare uuid.UUID: the API needs
 // status and created_at for its body, and a read-after-write to fetch them
@@ -206,23 +219,22 @@ func (c *Commander) Submit(ctx context.Context, cmd SubmitCommand) (domaintasks.
 		return domaintasks.Task{}, false, fmt.Errorf("submit task: %w", err)
 	}
 
-	// Parsed once, here, and handed down typed. The wire's pattern rejects a
-	// non-ASCII key before it gets this far. This is the backstop for every
-	// other caller.
-	var (
-		key domaintasks.IdempotencyKey
-		fp  domaintasks.PayloadFingerprint
-	)
+	// Stays nil for a keyless submit, which then writes no ledger row. Parsed
+	// once, here, and handed down typed: the wire's pattern rejects a bad key
+	// before it gets this far, and this is the backstop for every other caller.
+	var claim *domaintasks.IdempotencyClaim
+	if cmd.IdempotencyKey != "" {
+		key, err := domaintasks.NewIdempotencyKey(cmd.IdempotencyKey)
+		if err != nil {
+			return domaintasks.Task{}, false, fmt.Errorf("submit task: %w", err)
+		}
+		fp, err := domaintasks.NewPayloadFingerprint(cmd.Payload)
+		if err != nil {
+			return domaintasks.Task{}, false, fmt.Errorf("submit task: %w", err)
+		}
+		claim = &domaintasks.IdempotencyClaim{Key: key, Fingerprint: fp}
 
-	keyed := cmd.IdempotencyKey != ""
-	if keyed {
-		if key, err = domaintasks.NewIdempotencyKey(cmd.IdempotencyKey); err != nil {
-			return domaintasks.Task{}, false, fmt.Errorf("submit task: %w", err)
-		}
-		if fp, err = domaintasks.NewPayloadFingerprint(cmd.Payload); err != nil {
-			return domaintasks.Task{}, false, fmt.Errorf("submit task: %w", err)
-		}
-		existing, hit, err := c.fastPath(ctx, handler, key, fp)
+		existing, hit, err := c.fastPath(ctx, handler, *claim)
 		if err != nil {
 			return domaintasks.Task{}, false, err
 		}
@@ -236,54 +248,36 @@ func (c *Commander) Submit(ctx context.Context, cmd SubmitCommand) (domaintasks.
 		return domaintasks.Task{}, false, fmt.Errorf("new id: %w", err)
 	}
 
-	// UTC strips the monotonic reading, so the value compares cleanly against
-	// what timestamptz gives back.
-	now := c.now().UTC()
+	// UTC strips the monotonic reading; Truncate drops what timestamptz cannot
+	// store, so the aggregate, its events and the row all agree on the instant.
+	now := c.now().UTC().Truncate(time.Microsecond)
 
 	t, err := domaintasks.Submit(id, handler, defaultPriority, cmd.Payload, defaultMaxAttempts, now)
 	if err != nil {
 		return domaintasks.Task{}, false, fmt.Errorf("submit task: %w", err)
 	}
 
-	var rawKey *string
-	if keyed {
-		// A pointer to "" is NOT the same as nil here: "" would be a real ledger
-		// key, so every keyless submit after the first would collide.
-		rawKey = &cmd.IdempotencyKey
-	}
-
 	err = c.tx.WithinTx(ctx, func(ctx context.Context) error {
-		if err := c.tasks.Insert(ctx, t, rawKey); err != nil {
+		if err := c.tasks.Insert(ctx, t, claim); err != nil {
 			return err
 		}
 
 		// Drains the buffer - the aggregate is empty after this and everything
 		// it emitted lands in the same transaction as the row.
-		for ev := range t.PullEvents() {
-			if err := c.outbox.Append(ctx, ev); err != nil {
-				return err
-			}
-		}
-		return nil
+		return c.outbox.Append(ctx, slices.Collect(t.PullEvents())...)
 	})
 
 	switch {
 	case err == nil:
-		if keyed {
-			c.warmCache(ctx, handler, key, domaintasks.IdempotencyRecord{
+		if claim != nil {
+			c.warmCache(ctx, handler, claim.Key, domaintasks.IdempotencyRecord{
 				TaskID:      t.ID(),
-				Fingerprint: fp,
+				Fingerprint: claim.Fingerprint,
 			})
 		}
 		return t, true, nil
-	case errors.Is(err, domaintasks.ErrConflict):
-		if !keyed {
-			// 23505 with no key means the collision came from the UUIDv7
-			// primary key, not the ledger. Nothing to replay - this is a
-			// genuine failure.
-			return domaintasks.Task{}, false, fmt.Errorf("idempotency conflict without a key: %w", err)
-		}
-		existing, err := c.replay(ctx, handler, key, fp)
+	case claim != nil && errors.Is(err, domaintasks.ErrConflict):
+		existing, err := c.replay(ctx, handler, *claim)
 		if err != nil {
 			return domaintasks.Task{}, false, err
 		}

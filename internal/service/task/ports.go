@@ -13,12 +13,9 @@ import (
 // TasksRepo is the persistence port for the Task aggregate.
 // Implemented by internal/repository/tasks.
 type TasksRepo interface {
-	// Insert takes the idempotency key alongside the aggregate: the key is a
-	// property of the submission, not of the task. A non-nil key also writes the
-	// ledger row - key, task id, payload fingerprint - in the same transaction;
-	// a key already in the ledger is ErrConflict. A nil key means "no key" and
-	// writes no ledger row.
-	Insert(ctx context.Context, t tasks.Task, idempotencyKey *string) error
+	// Insert persists the task. A non-nil claim also writes its ledger row in the
+	// same transaction; a key already in the ledger is ErrConflict.
+	Insert(ctx context.Context, t tasks.Task, claim *tasks.IdempotencyClaim) error
 	// Get finds a task wherever it lives: the hot table, or tasks_archive once
 	// it has reached a terminal status. Only then is it ErrNotFound.
 	Get(ctx context.Context, id uuid.UUID) (tasks.Task, error)
@@ -53,8 +50,8 @@ type TasksRepo interface {
 type AttemptsRepo interface {
 	// Heartbeat stamps last_heartbeat = now (and progress_pct when non-nil) on
 	// the in-flight attempt row. Heartbeats land on task_attempts, never on
-	// tasks - schema.md's rule that keeps the hot table's write rate
-	// proportional to state transitions. Implemented with CE6.
+	// tasks, which keeps the hot table's write rate proportional to state
+	// transitions. Implemented with the worker heartbeats.
 	Heartbeat(ctx context.Context, taskID uuid.UUID, progress *float32, now time.Time) error
 }
 

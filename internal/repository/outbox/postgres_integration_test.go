@@ -3,73 +3,21 @@
 package outbox_test
 
 import (
-	"context"
 	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/modules/postgres"
-	"github.com/testcontainers/testcontainers-go/wait"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/RomanAgaltsev/flowhand/internal/config"
 	"github.com/RomanAgaltsev/flowhand/internal/domain"
 	domaintasks "github.com/RomanAgaltsev/flowhand/internal/domain/tasks"
 	repoutbox "github.com/RomanAgaltsev/flowhand/internal/repository/outbox"
-	"github.com/RomanAgaltsev/flowhand/internal/storage"
 	"github.com/RomanAgaltsev/flowhand/internal/storage/txmgr"
-	"github.com/RomanAgaltsev/flowhand/migrations"
+	"github.com/RomanAgaltsev/flowhand/internal/testutil/pgtest"
 )
-
-// startPostgresWithMigrations brings up a throwaway Postgres, applies every
-// goose migration against it, and returns a pool pointed at it.
-//
-// A deliberate copy of the tasks package's harness rather than a shared
-// testutil helper: the two suites must stay independently runnable, and the
-// harness is small enough that sharing it would couple the packages the task
-// just split apart.
-func startPostgresWithMigrations(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	ctx := context.Background()
-
-	pg, err := postgres.Run(
-		ctx, "postgres:18-alpine",
-		postgres.WithDatabase("flowhand"),
-		postgres.WithUsername("flowhand"),
-		postgres.WithPassword("flowhand"),
-		testcontainers.WithWaitStrategy(
-			wait.ForLog("database system is ready to accept connections").
-				WithOccurrence(2).WithStartupTimeout(60*time.Second),
-		),
-	)
-	require.NoError(t, err)
-	testcontainers.CleanupContainer(t, pg)
-
-	dsn, err := pg.ConnectionString(ctx, "sslmode=disable")
-	require.NoError(t, err)
-
-	pool, err := storage.NewPool(ctx, config.DB{DSN: dsn, MaxConns: 4, MinConns: 1})
-	require.NoError(t, err)
-	t.Cleanup(pool.Close)
-
-	p, closeProvider, err := storage.NewGooseProvider(
-		ctx,
-		config.DB{DSN: dsn, MaxConns: 2, MinConns: 1},
-		migrations.FS,
-	)
-	require.NoError(t, err)
-	defer func() { require.NoError(t, closeProvider()) }()
-
-	_, err = p.Up(ctx)
-	require.NoError(t, err, "migrations must apply cleanly")
-
-	return pool
-}
 
 // fakeCatalog stands in for the worker registry; Append never consults it, but
 // building a Task through the validating constructors does.
@@ -102,9 +50,9 @@ func submitted(t *testing.T) domaintasks.Task {
 // column can never return encodeEnvelope's exact bytes. The byte shape itself
 // is pinned by TestEncodeEnvelope_ExactBytes in mapper_test.go.
 func TestEnvelopeShape(t *testing.T) {
-	pool := startPostgresWithMigrations(t)
+	pool := pgtest.Postgres(t)
 	repo := repoutbox.New(txmgr.New(pool))
-	ctx := context.Background()
+	ctx := t.Context()
 
 	tt := submitted(t)
 	submittedAt := time.Now().UTC().Truncate(time.Microsecond)

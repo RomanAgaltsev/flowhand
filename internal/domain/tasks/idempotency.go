@@ -4,17 +4,32 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
+	"strings"
 
 	"github.com/google/uuid"
 )
 
+const (
+	// maxNumberBytes bounds one JSON number in a payload. Postgres stores a JSONB
+	// number as numeric, which refuses more than 16383 digits after the point, so
+	// a number cannot be left to grow with the body. A double needs 24 characters;
+	// 1024 leaves room for exact decimals without approaching that limit.
+	maxNumberBytes = 1024
+
+	// maxExponentDigits bounds a number's exponent for the same reason: numeric
+	// refuses 1e-16384 although a double reads it as a plain 0.
+	maxExponentDigits = 3
+)
+
 // PayloadFingerprint identifies a payload up to differences JSON itself treats
-// as insignificant: object key order and whitespace. Two submits under one
-// idempotency key are the same request exactly when their fingerprints are
-// equal.
+// as insignificant: object member order, whitespace, string escapes and the
+// spelling of a number. Two submits under one idempotency key are the same
+// request exactly when their fingerprints are equal.
 //
 // It is the first 16 bytes of sha256 over the canonical form. A collision would
 // accept a different payload as a duplicate, which is why it is 16 bytes and
@@ -22,18 +37,18 @@ import (
 type PayloadFingerprint [16]byte
 
 // NewPayloadFingerprint canonicalizes payload and hashes it: the first 16
-// bytes of sha256(canonicalJSON(payload)). It fails only when payload is not
-// exactly one JSON value. The error wraps ErrInvalidPayload.
+// bytes of sha256(canonicalJSON(payload)). It fails when payload is not a value
+// the task store can hold; the error wraps ErrInvalidPayload.
 func NewPayloadFingerprint(payload json.RawMessage) (PayloadFingerprint, error) {
 	p, err := canonicalJSON(payload)
 	if err != nil {
-		return [16]byte{}, err
+		return PayloadFingerprint{}, err
 	}
 
 	h := sha256.Sum256(p)
 
-	var fp [16]byte
-	copy(fp[:], h[:16])
+	var fp PayloadFingerprint
+	copy(fp[:], h[:])
 
 	return fp, nil
 }
@@ -46,38 +61,79 @@ type IdempotencyRecord struct {
 	Fingerprint PayloadFingerprint
 }
 
-// canonicalJSON returns a byte-stable encoding of one JSON value: obejct keys
-// sorted at every level, insignificant whitespace removed, string escapes
-// normalized by the decode. Number literals are kept as sent.
-//
-// Three rules and each one is a test in idempotency_test.go:
-//   - decode with json.Decoder and UseNumber, never json.Unmarshal into any,
-//     wich turns every number into a float64;
-//   - exactly one value: anything after it - a second value, stray bytes - is
-//     ErrInvalidPayload, not silently igonred;
-//   - encode what was decoded with json.Marshal, which sorts map keys at every
-//     depth and writes a json.Number verbatim.
-//
-// This approximates RFC 8785 and is NOT conformant: keys sort by UTF-8 byte,
-// not UTF-16 code unit and numbers are not re-formated. That is safe only
-// because the output is compared solely against this function's own output.
-func canonicalJSON(raw json.RawMessage) ([]byte, error) {
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.UseNumber()
+// IdempotencyClaim is what a keyed submit asserts: this key, for this payload.
+// It is built once, in the Commander, and stored as given, so the cache and the
+// ledger can never hold two different fingerprints for one submit.
+type IdempotencyClaim struct {
+	Key         IdempotencyKey
+	Fingerprint PayloadFingerprint
+}
 
-	var v any
-	if err := dec.Decode(&v); err != nil {
+// canonicalJSON returns the RFC 8785 (JCS) form of one JSON value, or
+// ErrInvalidPayload when raw is anything else: trailing data, invalid UTF-8, a
+// lone surrogate, a duplicate object name, or a value checkStorable refuses.
+//
+// Integers keep their digits (CanonicalizeRawInts(false)), so ids beyond 2^53
+// stay distinct. Every other number becomes an IEEE 754 double, which makes 1.0
+// and 1 one request, and makes two floats that differ only past the 17th
+// significant digit one request too: accepted, because a task payload that
+// depends on that precision is carrying it as a string.
+func canonicalJSON(raw json.RawMessage) ([]byte, error) {
+	v := jsontext.Value(bytes.Clone(raw)) // Canonicalize works in place
+	if err := v.Canonicalize(jsontext.CanonicalizeRawInts(false)); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalidPayload, err)
 	}
-	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("%w: data after the first value", ErrInvalidPayload)
+	// raw, not v: Canonicalize saturates a float beyond double range, so the
+	// out-of-range number checkStorable looks for is gone from v.
+	if err := checkStorable(raw); err != nil {
+		return nil, err
 	}
+	return v, nil
+}
 
-	// encoding/json sorts map keys at every depth and writes a json.Number
-	// verbatim, so marshalling what UseNumber decoded IS the canonical form.
-	b, err := json.Marshal(v)
-	if err != nil {
-		return nil, fmt.Errorf("encode canonical payload: %w", err)
+// checkStorable refuses what is valid JSON but cannot go into a Postgres JSONB
+// column: U+0000 in a string or an object name, and a number numeric cannot
+// hold. Without it those payloads reach the insert and come back as a 500.
+//
+// raw must already be one valid value; canonicalJSON establishes that first.
+func checkStorable(raw json.RawMessage) error {
+	dec := jsontext.NewDecoder(bytes.NewReader(raw))
+	for {
+		tok, err := dec.ReadToken()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("%w: %w", ErrInvalidPayload, err)
+		}
+
+		switch tok.Kind() {
+		case jsontext.KindString:
+			if strings.IndexByte(tok.String(), 0) >= 0 {
+				return fmt.Errorf("%w: contains U+0000", ErrInvalidPayload)
+			}
+		case jsontext.KindNumber:
+			if !numberFits(tok.String()) {
+				return fmt.Errorf("%w: a number is out of range", ErrInvalidPayload)
+			}
+		default:
+			// Structure and literals hold nothing the column can refuse.
+		}
 	}
-	return b, nil
+}
+
+// numberFits reports whether a JSON number literal is inside the bounds a
+// payload may use. Beyond double range is refused as well as beyond numeric's:
+// canonicalization would otherwise saturate 1e400 and 1e500 to one value, and
+// two different payloads would share a fingerprint.
+func numberFits(s string) bool {
+	if len(s) > maxNumberBytes {
+		return false
+	}
+	if _, exp, ok := strings.Cut(strings.ToLower(s), "e"); ok &&
+		len(strings.TrimLeft(exp, "+-0")) > maxExponentDigits {
+		return false
+	}
+	_, err := strconv.ParseFloat(s, 64)
+	return err == nil
 }

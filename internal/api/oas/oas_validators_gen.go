@@ -78,7 +78,7 @@ func (s *CreateTaskRequest) Validate() error {
 					MaxLengthSet:  true,
 					Email:         false,
 					Hostname:      false,
-					Regex:         regexMap["^[\\x00-\\x7F]+$"],
+					Regex:         regexMap["^[\\x20-\\x7E]+$"],
 					MinNumeric:    0,
 					MinNumericSet: false,
 					MaxNumeric:    0,

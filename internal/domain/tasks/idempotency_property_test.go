@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"maps"
 	"math/rand/v2"
+	"strings"
 	"testing"
 
 	"github.com/leanovate/gopter"
@@ -48,14 +49,20 @@ func shuffled(obj map[string]string) []string {
 }
 
 func TestPayloadFingerprintProperties(t *testing.T) {
+	t.Parallel()
+
 	params := gopter.DefaultTestParameters()
-	params.MinSuccessfulTests = 10000
+	params.MinSuccessfulTests = propertyCases()
 	props := gopter.NewProperties(params)
 
 	// Identifiers for keys, arbitrary strings for values: the awkward input
 	// belongs in the values, where it tests escaping, not in the keys, where it
 	// would make the shrinker report generator noise.
-	objGen := gen.MapOf(gen.Identifier(), gen.AnyString())
+	// U+0000 is the one string a payload may not hold; TestCanonicalJSON_RejectsInvalid
+	// covers it.
+	objGen := gen.MapOf(gen.Identifier(), gen.AnyString().SuchThat(func(s string) bool {
+		return !strings.ContainsRune(s, 0)
+	}))
 
 	props.Property("key order does not change the fingerprint", prop.ForAll(
 		func(obj map[string]string) bool {

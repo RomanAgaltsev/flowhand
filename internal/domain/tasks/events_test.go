@@ -34,6 +34,8 @@ func goldenTask(t *testing.T) Task {
 // consumer - so the strings are written out here as literals rather than
 // derived from the constants they are testing.
 func TestEventNames(t *testing.T) {
+	t.Parallel()
+
 	for _, tc := range []struct {
 		name string
 		kind Kind
@@ -58,6 +60,8 @@ func TestEventNames(t *testing.T) {
 // even if someone bypasses the exhaustive linter. This is the test the six
 // independent event types could not have.
 func TestEveryKindHasAName(t *testing.T) {
+	t.Parallel()
+
 	seen := map[string]bool{}
 	for k := KindSubmitted; k <= KindCancelled; k++ {
 		name := Event{kind: k}.EventName()
@@ -71,6 +75,8 @@ func TestEveryKindHasAName(t *testing.T) {
 // The zero Kind is invalid, and both the name and the payload must say so
 // rather than silently publishing a nameless event.
 func TestZeroKindIsRejected(t *testing.T) {
+	t.Parallel()
+
 	assert.Empty(t, Event{}.EventName())
 
 	_, err := json.Marshal(Event{})
@@ -82,6 +88,8 @@ func TestZeroKindIsRejected(t *testing.T) {
 // field every constructor stamps - not time.Now() read at marshal time. A
 // consumer orders on this value.
 func TestOccurredAtReportsTheStampedInstant(t *testing.T) {
+	t.Parallel()
+
 	task := goldenTask(t)
 
 	for _, tc := range []struct {
@@ -107,6 +115,8 @@ func TestOccurredAtReportsTheStampedInstant(t *testing.T) {
 // every consumer - which is what RetryScheduled.Attempt did before it was
 // wired up, making retry 1 indistinguishable from retry 5.
 func TestEventsCarryTheAggregatesFields(t *testing.T) {
+	t.Parallel()
+
 	task := goldenTask(t)
 
 	t.Run("submitted", func(t *testing.T) {
@@ -159,6 +169,8 @@ func TestEventsCarryTheAggregatesFields(t *testing.T) {
 // These goldens are also what makes the Go 1.27 encoding/json/v2 switch
 // provable rather than assumed.
 func TestPayloadGoldens(t *testing.T) {
+	t.Parallel()
+
 	task := goldenTask(t)
 	running := task
 	require.NoError(t, running.Start(uuid.Must(uuid.NewV7()), "w-1", goldenAt.Add(time.Minute), goldenAt))

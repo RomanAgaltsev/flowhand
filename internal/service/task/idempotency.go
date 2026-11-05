@@ -23,11 +23,13 @@ const idempotencyKeyPrefix = "flowhand:idemp:"
 // IdempotencyTTL is the cache lifetime.
 const IdempotencyTTL = 25 * time.Hour
 
-// redisStore is the IdempotencyStore backed by Redis.
-type redisStore struct {
-	rdb *redis.Client
-	log *slog.Logger
-}
+// cacheBudget bounds every Redis round trip on the submit path. The cache is an
+// accelerator: past this, falling through to the ledger is faster than waiting.
+//
+// It binds only on a client built with ContextTimeoutEnabled. Without that
+// option go-redis ignores the context's deadline, and a Redis that stops
+// answering holds the submit for the full read timeout.
+const cacheBudget = 25 * time.Millisecond
 
 // IdempotencyStore is the CACHE store for idempotency keys. The durable half
 // is the ledger row that TasksRepo.Insert writes inside the transaction.
@@ -42,9 +44,18 @@ type IdempotencyStore interface {
 	Record(ctx context.Context, handler domaintasks.Handler, key domaintasks.IdempotencyKey, rec domaintasks.IdempotencyRecord) error
 }
 
-// NewRedisIdempotencyStore returns the cache half.
-func NewRedisIdempotencyStore(rdb *redis.Client, log *slog.Logger) IdempotencyStore {
-	return &redisStore{rdb: rdb, log: log}
+// RedisStore is the IdempotencyStore backed by Redis.
+type RedisStore struct {
+	rdb *redis.Client
+	log *slog.Logger
+}
+
+// NewRedisIdempotencyStore returns the cache half. A nil log means slog.Default.
+func NewRedisIdempotencyStore(rdb *redis.Client, log *slog.Logger) *RedisStore {
+	if log == nil {
+		log = slog.Default()
+	}
+	return &RedisStore{rdb: rdb, log: log}
 }
 
 // Lookup is ADVISORY and never reports a cache failure to its caller.
@@ -57,10 +68,13 @@ func NewRedisIdempotencyStore(rdb *redis.Client, log *slog.Logger) IdempotencySt
 // A Redis failure MUST be logged. A silent fail-through makes a permanently
 // down Redis look exactly like a cold cache and nobody notices the fast path
 // is gone.
-func (s *redisStore) Lookup(
+func (s *RedisStore) Lookup(
 	ctx context.Context, handler domaintasks.Handler, key domaintasks.IdempotencyKey,
 ) (domaintasks.IdempotencyRecord, bool, error) {
-	val, err := s.rdb.Get(ctx, cacheKey(handler, key)).Result()
+	budget, cancel := context.WithTimeout(ctx, cacheBudget)
+	defer cancel()
+
+	val, err := s.rdb.Get(budget, cacheKey(handler, key)).Result()
 	switch {
 	case errors.Is(err, redis.Nil):
 		// A clean miss - the only one of the three that is not worth a log line.
@@ -74,9 +88,9 @@ func (s *redisStore) Lookup(
 	}
 	rec, ok := parseStored(val)
 	if !ok {
-		// Includes every value a pre-C3 build wrote: a bare task id.
+		// Includes every value an older build wrote: a bare task id.
 		s.log.WarnContext(ctx, "idempotency cache holds a malformed value, falling through to the ledger",
-			"idempotency_key", key.String())
+			"idempotency_key", key)
 		return domaintasks.IdempotencyRecord{}, false, nil
 	}
 	return rec, true, nil
@@ -88,9 +102,12 @@ func (s *redisStore) Lookup(
 //
 // The caller logs and ignores the error. It is returned rather than swallowed
 // here so the decision to ignore it is visible at the call site.
-func (s *redisStore) Record(
+func (s *RedisStore) Record(
 	ctx context.Context, handler domaintasks.Handler, key domaintasks.IdempotencyKey, rec domaintasks.IdempotencyRecord,
 ) error {
+	ctx, cancel := context.WithTimeout(ctx, cacheBudget)
+	defer cancel()
+
 	if err := s.rdb.Set(ctx, cacheKey(handler, key), formatStored(rec), IdempotencyTTL).Err(); err != nil {
 		return fmt.Errorf("record idempotency key: %w", err)
 	}
@@ -114,22 +131,21 @@ func formatStored(rec domaintasks.IdempotencyRecord) string {
 // an older build, or a truncated write, must degrade to a cache miss rather
 // than an error - the ledger is the authority and answers correctly either way.
 func parseStored(s string) (domaintasks.IdempotencyRecord, bool) {
-	splitted := strings.Split(s, ":")
-	if len(splitted) != 2 {
+	rawID, rawFP, ok := strings.Cut(s, ":")
+	if !ok || strings.Contains(rawFP, ":") {
 		return domaintasks.IdempotencyRecord{}, false
 	}
 
-	id, err := uuid.Parse(splitted[0])
+	id, err := uuid.Parse(rawID)
 	if err != nil {
 		return domaintasks.IdempotencyRecord{}, false
 	}
 
-	dec, err := hex.DecodeString(splitted[1])
-	if err != nil || len(dec) != 16 {
+	var fp domaintasks.PayloadFingerprint
+	dec, err := hex.DecodeString(rawFP)
+	if err != nil || len(dec) != len(fp) {
 		return domaintasks.IdempotencyRecord{}, false
 	}
-
-	var fp [16]byte
 	copy(fp[:], dec)
 
 	return domaintasks.IdempotencyRecord{TaskID: id, Fingerprint: fp}, true
