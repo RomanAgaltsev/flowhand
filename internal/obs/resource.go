@@ -5,11 +5,17 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/resource"
-	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 
 	"github.com/RomanAgaltsev/flowhand/internal/config"
 )
 
+// newResource builds the resource every provider reports under.
+//
+// The semconv import must match the schema of resource.Default() in the
+// go.opentelemetry.io/otel/sdk version in go.mod; bump both together.
+// resource.Merge refuses two different schema URLs, and flowhand server then exits
+// at startup.
 func newResource(cfg *config.Config) (*resource.Resource, error) {
 	var env attribute.KeyValue
 	switch cfg.Env {

@@ -2,7 +2,6 @@ package obs_test
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"testing"
 
@@ -39,7 +38,7 @@ func TestNewLogger_StampsTraceIDFromContext(t *testing.T) {
 	lg := obs.NewLoggerWithWriter(&config.Obs{LogFormat: "json", LogLevel: "info"}, &buf)
 
 	tp := sdktrace.NewTracerProvider() // local, never global — avoids the racy SetTracerProvider
-	ctx, span := tp.Tracer("test").Start(context.Background(), "op")
+	ctx, span := tp.Tracer("test").Start(t.Context(), "op")
 	defer span.End()
 
 	lg.InfoContext(ctx, "hello")
@@ -58,7 +57,7 @@ func TestNewLogger_TraceStampingSurvivesWithAttrs(t *testing.T) {
 		With("component", "api").WithGroup("req")
 
 	tp := sdktrace.NewTracerProvider()
-	ctx, span := tp.Tracer("test").Start(context.Background(), "op")
+	ctx, span := tp.Tracer("test").Start(t.Context(), "op")
 	defer span.End()
 	lg.InfoContext(ctx, "hello")
 
@@ -68,6 +67,6 @@ func TestNewLogger_TraceStampingSurvivesWithAttrs(t *testing.T) {
 func TestNewLogger_NoTraceOutsideSpan(t *testing.T) {
 	var buf bytes.Buffer
 	lg := obs.NewLoggerWithWriter(&config.Obs{LogFormat: "json", LogLevel: "info"}, &buf)
-	lg.InfoContext(context.Background(), "hello")
+	lg.InfoContext(t.Context(), "hello")
 	assert.NotContains(t, buf.String(), "trace_id")
 }

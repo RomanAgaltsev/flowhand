@@ -40,13 +40,18 @@ type DB struct {
 	MaxConnLifetime time.Duration `koanf:"max_conn_lifetime"`
 }
 
-// Redis holds the idempotency-cache connection settings.
+// Redis holds the idempotency-cache connection settings. The timeouts are the
+// backstop behind the submit path's own per-call budget.
 type Redis struct {
-	Addr string `koanf:"addr"`
+	Addr         string        `koanf:"addr"`
+	DialTimeout  time.Duration `koanf:"dial_timeout"`
+	ReadTimeout  time.Duration `koanf:"read_timeout"`
+	WriteTimeout time.Duration `koanf:"write_timeout"`
+	PoolTimeout  time.Duration `koanf:"pool_timeout"`
 }
 
 // Cache holds the read-side task-view cache settings. TTL bounds MEMORY,
-// not staleness: only terminal view are cached and those cannot go stale.
+// not staleness: only terminal views are cached and those cannot go stale.
 type Cache struct {
 	Capacity int           `koanf:"capacity"`
 	TTL      time.Duration `koanf:"ttl"`
@@ -76,6 +81,10 @@ func Load(path string, flags *pflag.FlagSet) (*Config, error) {
 		"db.min_conns":          2,
 		"db.max_conn_lifetime":  "1h", // never 0: pgxpool reads that as "expire immediately"
 		"redis.addr":            "localhost:6379",
+		"redis.dial_timeout":    "250ms",
+		"redis.read_timeout":    "100ms",
+		"redis.write_timeout":   "100ms",
+		"redis.pool_timeout":    "100ms",
 		"cache.capacity":        10000,
 		"cache.ttl":             "5m",
 		"obs.log_level":         "info",
@@ -110,7 +119,7 @@ func Load(path string, flags *pflag.FlagSet) (*Config, error) {
 		return nil, err
 	}
 
-	// 4. Flags (highest precedence), supplied by cobra in Task 8.
+	// 4. Flags (highest precedence), supplied by cobra.
 	if flags != nil {
 		if err := k.Load(posflag.ProviderWithValue(
 			flags, ".", k,
@@ -162,6 +171,17 @@ func Load(path string, flags *pflag.FlagSet) (*Config, error) {
 			MaxConns:        int32(maxConns),
 			MinConns:        int32(minConns),
 			MaxConnLifetime: k.Duration("db.max_conn_lifetime"),
+		},
+		Redis: Redis{
+			Addr:         k.String("redis.addr"),
+			DialTimeout:  k.Duration("redis.dial_timeout"),
+			ReadTimeout:  k.Duration("redis.read_timeout"),
+			WriteTimeout: k.Duration("redis.write_timeout"),
+			PoolTimeout:  k.Duration("redis.pool_timeout"),
+		},
+		Cache: Cache{
+			Capacity: k.Int("cache.capacity"),
+			TTL:      k.Duration("cache.ttl"),
 		},
 		Obs: Obs{
 			LogLevel:     k.String("obs.log_level"),

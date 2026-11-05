@@ -25,7 +25,7 @@ func TestHistogramView_AppliesSLOBuckets(t *testing.T) {
 
 	h, err := mp.Meter("test").Float64Histogram("widget.duration", metric.WithUnit("ms"))
 	require.NoError(t, err)
-	h.Record(context.Background(), 42)
+	h.Record(t.Context(), 42)
 
 	// The assertion that matters: our boundaries, not prometheus.DefBuckets.
 	require.Equal(t,
@@ -50,7 +50,7 @@ func TestHistogramView_SecondsInstrumentGetsSecondBuckets(t *testing.T) {
 
 	h, err := mp.Meter("test").Float64Histogram("gadget.duration", metric.WithUnit("s"))
 	require.NoError(t, err)
-	h.Record(context.Background(), 0.042)
+	h.Record(t.Context(), 0.042)
 
 	require.Equal(t,
 		[]float64{.005, .010, .020, .030, .040, .050, .075, .100, .250, .500, 1},
