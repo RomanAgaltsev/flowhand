@@ -1,7 +1,7 @@
 version: "3"
 
 vars:
-  GO_VERSION: '1.27.3'
+  GO_VERSION: '1.27.2'
   GOLANGCI_LINT_VERSION: 'v2.15.0'
   GCI_VERSION: 'v0.14.0'
   GOFUMPT_VERSION: 'v0.12.0'
@@ -300,10 +300,13 @@ tasks:
       - docker compose -f {{.COMPOSE_FILE}} up -d --build flowhand-demo
       - echo "submit rate - Grafana Explore, Prometheus datasource - rate(flowhand_demo_submits_total[1m])"
 
+  # -short only trims the gopter properties from 10,000 cases to 1,000: the
+  # detector makes them several times slower, and a plain `go test` still runs all
+  # of them.
   test:docker:
     desc: unit tests with the race detector, in a Linux container
     cmds:
-      - "{{.DOCKER_RUN}} go test -race -count=1 ./..."
+      - "{{.DOCKER_RUN}} go test -race -short -count=1 ./..."
 
   test:norace:
     desc: unit tests WITHOUT the race detector -- a partial gate
